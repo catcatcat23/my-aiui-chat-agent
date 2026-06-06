@@ -1,0 +1,12 @@
+{
+  "name": "skymate-aiui-agent",
+  "version": "0.1.0",
+  "description": "SkyMate AIUI agent for astronomy discovery cards",
+  "main": "app.js",
+  "private": true,
+  "scripts": {
+    "pack": "aix pack .",
+    "pack:opt": "aix pack . --optimize"
+  },
+  "dependencies": {}
+}

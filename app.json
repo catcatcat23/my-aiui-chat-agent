@@ -1,0 +1,10 @@
+{
+  "pages": [
+    "pages/index/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "SkyMate",
+    "navigationBarBackgroundColor": "#070B18",
+    "navigationBarTextStyle": "white"
+  }
+}
