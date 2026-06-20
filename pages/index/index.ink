@@ -1,70 +1,26 @@
 <script def>
 {
   "navigationBarTitleText": "SkyMate",
-  "description": "SkyMate 观星卡片：按 mode 展示首页、总览、详情或寻找步骤。",
+  "description": "智能眼镜观星助手。支持 Craft 按钮事件、ASR 入口、外部星图接口请求和单页状态切换。",
   "schema": {
     "data": {
       "type": "object",
       "properties": {
         "mode": {
           "type": "string",
-          "description": "home/chat/overview/detail/locate"
-        },
-        "object": {
-          "type": "string",
-          "description": "星体 key 或名称"
-        },
-        "selectedObject": {
-          "type": "string",
-          "description": "详情星体 key 或名称"
-        },
-        "verdict": {
-          "type": "string",
-          "description": "观星结论"
-        },
-        "condition": {
-          "type": "string",
-          "description": "天气或可见性摘要"
+          "description": "home/chat/loading/overview/detail/locate/error"
         },
         "locationName": {
           "type": "string",
-          "description": "位置名称"
-        },
-        "dataTime": {
-          "type": "string",
-          "description": "数据时间"
-        },
-        "skyChart": {
-          "type": "string",
-          "description": "sky_chart JSON 字符串"
-        },
-        "chart": {
-          "type": "string",
-          "description": "skyChart 别名"
-        },
-        "rawResult": {
-          "type": "string",
-          "description": "skyChart 别名"
-        },
-        "serviceUrl": {
-          "type": "string",
-          "description": "数据来源地址"
-        },
-        "detailAnswer": {
-          "type": "string",
-          "description": "/sky/ask 回答"
-        },
-        "objectDetail": {
-          "type": "string",
-          "description": "详情 JSON 字符串"
-        },
-        "facts": {
-          "type": "string",
-          "description": "/sky/facts JSON 字符串"
+          "description": "观测位置"
         },
         "targets": {
           "type": "string",
-          "description": "目标数组 JSON 字符串"
+          "description": "推荐目标 JSON 字符串"
+        },
+        "selectedObject": {
+          "type": "string",
+          "description": "当前选中的星体"
         }
       }
     }
@@ -74,788 +30,1016 @@
 
 <script setup>
 const SKY_CHART_ENDPOINT = 'https://sky.eunoia.top/sky/chart'
+const BUILD_VERSION = 'v2.6-no-time-utc'
 
-const PRESET_OBJECTS = {
-  moon: {
-    key: 'moon',
-    name: '月亮',
-    type: 'moon',
-    typeLabel: '月亮',
-    englishName: 'Moon',
-    direction: '东南',
-    altitude: '35°',
-    bestTime: '今晚',
-    magnitude: '很亮',
-    intro: '最适合城市里快速观察的目标，肉眼就很明显。',
-    summary: '如果云不厚，月亮通常比星星更容易看到。',
-    locateSteps: ['先找天空最亮的白色圆面。', '避开楼体遮挡，朝开阔方向看。', '云层变薄时再停下来观察细节。'],
-    className: 'tone-moon',
-    left: '278px',
-    top: '38px'
-  },
-  jupiter: {
+const SKY_OPTIONS = {
+  star_max_mag: 3.0,
+  deep_sky_max_mag: 9.0,
+  min_altitude_deg: 15.0,
+  total_limit: 28,
+  include_planets: true,
+  include_deep_sky: true
+}
+
+const CITY_COORDS = [
+  { name: '苏州', aliases: ['苏州', 'suzhou', 'su zhou'], lat: 31.2989, lon: 120.5853 },
+  { name: '太仓', aliases: ['太仓', 'taicang', 'tai cang'], lat: 31.4839, lon: 121.15824 },
+  { name: '上海', aliases: ['上海', 'shanghai', 'shang hai'], lat: 31.2304, lon: 121.4737 },
+  { name: '杭州', aliases: ['杭州', 'hangzhou', 'hang zhou'], lat: 30.2741, lon: 120.1551 },
+  { name: '南京', aliases: ['南京', 'nanjing', 'nan jing'], lat: 32.0603, lon: 118.7969 },
+  { name: '北京', aliases: ['北京', 'beijing', 'bei jing'], lat: 39.9042, lon: 116.4074 },
+  { name: '纽约', aliases: ['纽约', 'new york', 'nyc'], lat: 40.7128, lon: -74.0060 }
+]
+
+const FALLBACK_TARGETS = [
+  {
     key: 'jupiter',
     name: '木星',
-    type: 'planet',
-    typeLabel: '行星',
-    englishName: 'Jupiter',
+    type: '行星',
+    typeClass: 'planet',
     direction: '东南',
     altitude: '35°',
-    bestTime: '21:00 - 23:00',
     magnitude: '很亮',
-    intro: '太阳系中体积最大的行星，亮度高，适合新手辨认。',
-    summary: '它通常不明显闪烁，看起来像稳定的亮点。',
-    locateSteps: ['面向东南方向寻找视野开阔处。', '把视线抬到地平线以上约 35°。', '优先寻找明亮且光点稳定的目标。'],
-    className: 'tone-planet',
-    left: '234px',
-    top: '76px'
+    bestTime: '今晚',
+    intro: '城市里也比较容易认出来，像一个稳定不闪的亮点。',
+    locate: '先找东南方向开阔处，再看地平线上方一段距离。'
   },
-  venus: {
-    key: 'venus',
-    name: '金星',
-    type: 'planet',
-    typeLabel: '行星',
-    englishName: 'Venus',
-    direction: '西方',
-    altitude: '20°',
-    bestTime: '日落后',
-    magnitude: '极亮',
-    intro: '傍晚或清晨最显眼的行星之一，常被叫作启明星或长庚星。',
-    summary: '它非常亮，低空时要注意楼房和树木遮挡。',
-    locateSteps: ['先确认日落后的西方低空。', '找最亮且不太闪烁的光点。', '如果地平线被挡住，换到更开阔的位置。'],
-    className: 'tone-planet',
-    left: '86px',
-    top: '94px'
+  {
+    key: 'vega',
+    name: '织女星',
+    type: '亮星',
+    typeClass: 'star',
+    direction: '东北',
+    altitude: '55°',
+    magnitude: '很亮',
+    bestTime: '入夜后',
+    intro: '夏季夜空非常显眼，适合新手先定位。',
+    locate: '朝东北较高的天空看，找一颗清亮的白色亮星。'
   },
-  mars: {
-    key: 'mars',
-    name: '火星',
-    type: 'planet',
-    typeLabel: '行星',
-    englishName: 'Mars',
-    direction: '南方',
-    altitude: '40°',
-    bestTime: '夜间',
-    magnitude: '偏亮',
-    intro: '火星常带一点橙红色，适合和普通白色亮星区分。',
-    summary: '亮度会随季节变化，不确定时可以先找颜色特征。',
-    locateSteps: ['面向南方或东南方的开阔天空。', '寻找略带橙红色的稳定亮点。', '和附近白色亮星对比颜色。'],
-    className: 'tone-planet',
-    left: '184px',
-    top: '62px'
-  },
-  sirius: {
-    key: 'sirius',
-    name: '天狼星',
-    type: 'star',
-    typeLabel: '亮星',
-    englishName: 'Sirius',
-    direction: '东南',
-    altitude: '30°',
-    bestTime: '20:30 - 22:30',
-    magnitude: '最亮恒星',
-    intro: '夜空中最亮的恒星之一，通常非常显眼。',
-    summary: '靠近地平线时会闪烁，城市里也比较容易看到。',
-    locateSteps: ['面向东南方向，从低空区域开始搜索。', '优先锁定最亮的白色光点。', '如果已找到猎户座，可沿腰带延长线向下寻找。'],
-    className: 'tone-star',
-    left: '308px',
-    top: '96px'
-  },
-  orion: {
-    key: 'orion',
-    name: '猎户座',
-    type: 'constellation',
-    typeLabel: '星座',
-    englishName: 'Orion',
-    direction: '南方',
-    altitude: '45°',
-    bestTime: '20:00 - 22:00',
-    magnitude: '明亮',
-    intro: '冬季夜空最容易辨认的星座之一，适合做方位参照。',
-    summary: '先找三颗近乎成一直线的亮星，再看上下轮廓。',
-    locateSteps: ['面向南方，先找三颗成线的亮星。', '确认腰带后，再看上下两侧的亮星轮廓。', '用猎户座继续定位附近亮星。'],
-    className: 'tone-constellation',
-    left: '166px',
-    top: '86px'
-  },
-  meteor: {
-    key: 'meteor',
-    name: '流星雨',
-    type: 'meteor',
-    typeLabel: '流星雨',
-    englishName: 'Meteor Shower',
-    direction: '天空开阔处',
-    altitude: '抬头约 45°',
-    bestTime: '后半夜',
-    magnitude: '不稳定',
-    intro: '流星雨需要耐心等待，也更依赖黑暗天空。',
-    summary: '城市里不太适合专门看，最好远离灯光。',
-    locateSteps: ['找灯少、视野开阔的位置。', '不要只盯着辐射点，放松看大范围天空。', '至少预留 20 分钟让眼睛适应黑暗。'],
-    className: 'tone-meteor',
-    left: '112px',
-    top: '40px'
+  {
+    key: 'arcturus',
+    name: '大角星',
+    type: '亮星',
+    typeClass: 'star',
+    direction: '西南',
+    altitude: '65°',
+    magnitude: '很亮',
+    bestTime: '今晚',
+    intro: '亮度高，城市里也更有机会看到。',
+    locate: '朝西南偏高处找一颗略带暖色的亮星。'
+  }
+]
+
+function getRuntimeRoot() {
+  if (typeof globalThis !== 'undefined') return globalThis
+  if (typeof window !== 'undefined') return window
+  if (typeof self !== 'undefined') return self
+  return {}
+}
+
+function getSpeechRecognitionCandidate(root) {
+  const runtime = root || getRuntimeRoot()
+  const speechModule = runtime.speech || runtime.aiuiSpeech || runtime.rokidSpeech || {}
+  return runtime.SpeechRecognition ||
+    runtime.webkitSpeechRecognition ||
+    speechModule.SpeechRecognition ||
+    speechModule.recognition ||
+    null
+}
+
+function safeAssignRecognitionOption(recognition, key, value) {
+  if (!recognition) return
+  try {
+    recognition[key] = value
+  } catch (error) {
+    console.log('[SkyMate] ASR option ignored', key, error || {})
   }
 }
 
-const FALLBACK_TARGETS = [PRESET_OBJECTS.moon, PRESET_OBJECTS.jupiter, PRESET_OBJECTS.sirius, PRESET_OBJECTS.orion]
+function configureSpeechRecognition(recognition) {
+  safeAssignRecognitionOption(recognition, 'lang', 'zh-CN')
+  safeAssignRecognitionOption(recognition, 'continuous', false)
+  safeAssignRecognitionOption(recognition, 'interimResults', false)
+  safeAssignRecognitionOption(recognition, 'maxAlternatives', 1)
+}
 
 function hasValue(value) {
   return value !== undefined && value !== null && value !== ''
 }
 
-function toText(value, fallback) {
-  if (hasValue(value)) {
-    return String(value)
-  }
-  return fallback || ''
+function text(value, fallback) {
+  return hasValue(value) ? String(value) : (fallback || '')
 }
 
-function toKey(value) {
-  return toText(value, '')
+function keyOf(value) {
+  return text(value, '')
     .toLowerCase()
     .replace(/\s+/g, '-')
     .replace(/[^\w\u4e00-\u9fa5-]/g, '')
 }
 
-function normalizeType(value) {
-  const typeText = toText(value, '').toLowerCase()
-  if (typeText.indexOf('moon') >= 0 || typeText.indexOf('月') >= 0) return 'moon'
-  if (typeText.indexOf('planet') >= 0 || typeText.indexOf('行星') >= 0) return 'planet'
-  if (typeText.indexOf('constellation') >= 0 || typeText.indexOf('星座') >= 0) return 'constellation'
-  if (typeText.indexOf('meteor') >= 0 || typeText.indexOf('流星') >= 0) return 'meteor'
-  if (typeText.indexOf('deep') >= 0 || typeText.indexOf('星云') >= 0 || typeText.indexOf('星团') >= 0) return 'deepSky'
-  return 'star'
-}
-
-function typeLabel(type) {
-  const labels = {
-    moon: '月亮',
-    planet: '行星',
-    star: '亮星',
-    constellation: '星座',
-    meteor: '流星雨',
-    deepSky: '深空'
+function readAny(source, keys) {
+  const raw = source || {}
+  for (let index = 0; index < keys.length; index += 1) {
+    const value = raw[keys[index]]
+    if (hasValue(value)) return value
   }
-  return labels[type] || '目标'
+  return undefined
 }
 
-function classNameForType(type) {
-  const classes = {
-    moon: 'tone-moon',
-    planet: 'tone-planet',
-    star: 'tone-star',
-    constellation: 'tone-constellation',
-    meteor: 'tone-meteor',
-    deepSky: 'tone-deepsky'
+function angleText(value) {
+  if (!hasValue(value)) return ''
+  if (typeof value === 'number') return `${Math.round(value * 10) / 10}°`
+  const valueText = String(value)
+  return valueText.indexOf('°') >= 0 ? valueText : `${valueText}°`
+}
+
+function directionFromAzimuth(value) {
+  const azimuth = parseFloat(text(value, '').replace('°', ''))
+  if (isNaN(azimuth)) return ''
+  const normalized = ((azimuth % 360) + 360) % 360
+  if (normalized >= 337.5 || normalized < 22.5) return '北'
+  if (normalized < 67.5) return '东北'
+  if (normalized < 112.5) return '东'
+  if (normalized < 157.5) return '东南'
+  if (normalized < 202.5) return '南'
+  if (normalized < 247.5) return '西南'
+  if (normalized < 292.5) return '西'
+  return '西北'
+}
+
+function targetType(raw) {
+  const typeText = text(raw, '').toLowerCase()
+  if (typeText.indexOf('moon') >= 0 || typeText.indexOf('月') >= 0) return { label: '月亮', className: 'moon', rank: 0 }
+  if (typeText.indexOf('planet') >= 0 || typeText.indexOf('行星') >= 0) return { label: '行星', className: 'planet', rank: 1 }
+  if (typeText.indexOf('star') >= 0 || typeText.indexOf('亮星') >= 0 || typeText.indexOf('恒星') >= 0) return { label: '亮星', className: 'star', rank: 2 }
+  if (typeText.indexOf('constellation') >= 0 || typeText.indexOf('星座') >= 0) return { label: '星座', className: 'constellation', rank: 3 }
+  if (typeText.indexOf('meteor') >= 0 || typeText.indexOf('流星') >= 0) return { label: '流星雨', className: 'meteor', rank: 4 }
+  return { label: '深空', className: 'deep', rank: 5 }
+}
+
+function collectTargets(source, bucket) {
+  if (!source) return
+  if (Array.isArray(source)) {
+    source.forEach(item => bucket.push(item))
+    return
   }
-  return classes[type] || 'tone-star'
-}
+  if (typeof source !== 'object') return
 
-function directionLeft(direction, fallbackIndex) {
-  const text = toText(direction, '')
-  if (text.indexOf('西') >= 0) return '86px'
-  if (text.indexOf('东') >= 0) return '292px'
-  if (text.indexOf('南') >= 0) return '190px'
-  if (text.indexOf('北') >= 0) return '186px'
-  return `${96 + fallbackIndex * 68}px`
-}
+  const arrays = [
+    'targets',
+    'objects',
+    'visibleObjects',
+    'visible_objects',
+    'recommendations',
+    'recommended',
+    'planets',
+    'bright_stars',
+    'stars',
+    'deep_sky',
+    'deepSky',
+    'constellations',
+    'meteorShowers'
+  ]
 
-function altitudeTop(altitude, fallbackIndex) {
-  const number = parseFloat(toText(altitude, '').replace('°', ''))
-  if (!isNaN(number)) {
-    const bounded = Math.max(8, Math.min(110, 126 - number * 1.35))
-    return `${Math.round(bounded)}px`
-  }
-  return `${42 + fallbackIndex * 16}px`
-}
+  arrays.forEach(name => {
+    if (Array.isArray(source[name])) {
+      source[name].forEach(item => bucket.push(item))
+    }
+  })
 
-function normalizeTarget(rawTarget, index) {
-  if (typeof rawTarget === 'string') {
-    const preset = findPreset(rawTarget)
-    return preset || Object.assign({}, PRESET_OBJECTS.sirius, {
-      key: toKey(rawTarget) || `target-${index + 1}`,
-      name: rawTarget
-    })
+  if (source.moon && typeof source.moon === 'object') {
+    bucket.push(Object.assign({ type: 'moon' }, source.moon))
   }
 
-  const raw = rawTarget || {}
-  const rawName = raw.name || raw.zhName || raw.cnName || raw.title || raw.objectName || raw.object || raw.body || raw.designation || raw.id
-  const preset = findPreset(raw.key || rawName)
-  const base = preset || {}
-  const type = normalizeType(raw.type || raw.category || base.type)
-  const name = toText(rawName, base.name || `目标 ${index + 1}`)
-  const key = toKey(raw.key || raw.id || base.key || name) || `target-${index + 1}`
-  const direction = toText(raw.direction || raw.azimuthText || raw.cardinalDirection || raw.azimuthDirection || raw.compass || base.direction, '天空开阔处')
-  const altitude = toText(raw.altitude || raw.altitudeDeg || raw.alt || raw.elevation || raw.height || base.altitude, '中低空')
+  if (source.data && source.data !== source) collectTargets(source.data, bucket)
+  if (source.result && source.result !== source) collectTargets(source.result, bucket)
+  if (source.sky_chart && source.sky_chart !== source) collectTargets(source.sky_chart, bucket)
+  if (source.skyChart && source.skyChart !== source) collectTargets(source.skyChart, bucket)
+  if (source.chart && source.chart !== source) collectTargets(source.chart, bucket)
+}
+
+function normalizeTarget(raw, index) {
+  const object = raw || {}
+  const name = text(readAny(object, ['name', 'display_name', 'name_zh', 'name_en', '名称', 'title', 'objectName', 'designation', 'id']), `目标 ${index + 1}`)
+  const typeInfo = targetType(readAny(object, ['type', '类型', 'category', 'kind', 'objectType', 'object_type']))
+  const azimuth = readAny(object, ['azimuth', '方位角', 'azimuth_deg', 'azimuthDeg', 'az'])
+  const altitude = readAny(object, ['altitude', '高度角', 'altitude_deg', 'altitudeDeg', 'alt', 'elevation'])
+  const direction = text(readAny(object, ['direction', '方向', 'azimuthText', 'cardinalDirection']) || directionFromAzimuth(azimuth), '开阔天空')
+  const magnitude = text(readAny(object, ['magnitude', '星等', 'mag', 'brightness', 'apparentMagnitude']), '可见')
+  const key = keyOf(readAny(object, ['key', 'id']) || name) || `target-${index + 1}`
 
   return {
     key,
     name,
-    type,
-    typeLabel: typeLabel(type),
-    englishName: toText(raw.englishName || raw.enName || raw.latinName || raw.nameEn || base.englishName, ''),
+    type: typeInfo.label,
+    typeClass: typeInfo.className,
+    rank: typeInfo.rank,
     direction,
-    altitude,
-    bestTime: toText(raw.bestTime || raw.visibleTime || raw.timeWindow || raw.riseSet || raw.time || raw.transitTime || base.bestTime, '今晚'),
-    magnitude: toText(raw.magnitude || raw.brightness || raw.mag || raw.apparentMagnitude || base.magnitude, '可见'),
-    intro: toText(raw.intro || raw.description || raw.detail || base.intro, '这个目标适合继续了解位置和观测方法。'),
-    summary: toText(raw.summary || raw.reason || raw.tip || raw.observationTip || base.summary, '可以先根据方位和高度大致寻找，不需要追求很精确。'),
-    locateSteps: raw.locateSteps || raw.steps || base.locateSteps || ['先确认大致方位。', '寻找天空中最显眼的亮点或轮廓。', '如果云层遮挡，就等几分钟再看。'],
-    className: classNameForType(type),
-    left: toText(raw.left || raw.x, directionLeft(direction, index)),
-    top: toText(raw.top || raw.y, altitudeTop(altitude, index))
+    altitude: angleText(altitude) || '中等高度',
+    magnitude,
+    bestTime: text(readAny(object, ['bestTime', '最佳时间', 'visibleTime', 'timeWindow', 'time']), '今晚'),
+    intro: text(readAny(object, ['intro', 'description', '描述', 'summary', 'reason']), `${name} 可以作为今晚的观测目标。`),
+    locate: text(readAny(object, ['locate', 'tip', 'observationTip', 'howToFind']), `朝${direction}方向看，先找最亮、最稳定的光点。`)
   }
 }
 
-function findPreset(value) {
-  const key = toKey(value)
-  if (PRESET_OBJECTS[key]) return PRESET_OBJECTS[key]
+function pickTargets(rawChart) {
+  const bucket = []
+  collectTargets(rawChart, bucket)
 
-  const text = toText(value, '').toLowerCase()
-  const names = Object.keys(PRESET_OBJECTS)
-  for (let index = 0; index < names.length; index += 1) {
-    const preset = PRESET_OBJECTS[names[index]]
-    if (text === preset.name || text === preset.englishName.toLowerCase()) {
-      return preset
-    }
+  const seen = {}
+  const targets = bucket
+    .map((item, index) => normalizeTarget(item, index))
+    .filter(item => {
+      if (seen[item.key]) return false
+      seen[item.key] = true
+      return true
+    })
+    .sort((left, right) => {
+      if (left.rank !== right.rank) return left.rank - right.rank
+      const leftMag = parseFloat(left.magnitude)
+      const rightMag = parseFloat(right.magnitude)
+      if (!isNaN(leftMag) && !isNaN(rightMag)) return leftMag - rightMag
+      return 0
+    })
+
+  return (targets.length ? targets : FALLBACK_TARGETS).slice(0, 4)
+}
+
+function parseJsonMaybe(value) {
+  if (!hasValue(value)) return null
+  if (typeof value === 'object') return value
+  try {
+    return JSON.parse(String(value))
+  } catch (error) {
+    return null
+  }
+}
+
+function cityFromText(input) {
+  const raw = text(input, '').toLowerCase()
+  for (let index = 0; index < CITY_COORDS.length; index += 1) {
+    const city = CITY_COORDS[index]
+    const matched = city.aliases.some(alias => raw.indexOf(alias.toLowerCase()) >= 0)
+    if (matched) return city
   }
   return null
 }
 
-function parseTargets(value) {
-  if (Array.isArray(value)) return value
-  if (!hasValue(value)) return []
+function placeFromQuery(query) {
+  const raw = query || {}
+  const lat = parseFloat(raw.lat || raw.latitude)
+  const lon = parseFloat(raw.lon || raw.lng || raw.longitude)
+  if (isNaN(lat) || isNaN(lon)) return null
+  return {
+    name: text(raw.locationName || raw.city || raw.location, '当前位置'),
+    lat,
+    lon
+  }
+}
 
-  if (typeof value === 'string') {
+function queryFromRaw(rawQuery) {
+  if (!rawQuery) return {}
+  if (typeof rawQuery === 'string') return parseJsonMaybe(rawQuery) || {}
+  if (rawQuery.data && typeof rawQuery.data === 'string') {
+    return Object.assign({}, rawQuery, parseJsonMaybe(rawQuery.data) || {})
+  }
+  if (rawQuery.data && typeof rawQuery.data === 'object') {
+    return Object.assign({}, rawQuery, rawQuery.data)
+  }
+  return rawQuery
+}
+
+function errorText(error) {
+  if (!error) return 'unknown error'
+  return error.message || error.statusText || String(error)
+}
+
+function queryStringFromPayload(payload) {
+  const keys = Object.keys(payload || {})
+  return keys
+    .filter(key => hasValue(payload[key]))
+    .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(String(payload[key]))}`)
+    .join('&')
+}
+
+async function responseErrorText(response, prefix) {
+  const statusText = `${prefix || 'HTTP'} ${response ? response.status : 'unknown'}`
+  if (!response) return statusText
+
+  if (typeof response.json === 'function') {
     try {
-      const parsed = JSON.parse(value)
-      return Array.isArray(parsed) ? parsed : []
+      const json = await response.json()
+      return `${statusText}: ${JSON.stringify(json).slice(0, 180)}`
     } catch (error) {
-      return value.split(',').map(item => item.trim()).filter(Boolean)
+      // Some runtimes only allow the response body to be consumed once.
     }
   }
 
-  if (Array.isArray(value.targets)) return value.targets
-  if (Array.isArray(value.objects)) return value.objects
-  if (Array.isArray(value.visibleObjects)) return value.visibleObjects
-  return []
-}
+  if (typeof response.text !== 'function') return statusText
 
-function parseObjectValue(value) {
-  if (!hasValue(value)) return null
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value)
-    } catch (error) {
-      return null
-    }
+  try {
+    const body = await response.text()
+    if (!body) return statusText
+    return `${statusText}: ${String(body).slice(0, 180)}`
+  } catch (error) {
+    return statusText
   }
-  return value
-}
-
-function pushArrayTargets(bucket, value) {
-  if (!Array.isArray(value)) return
-  value.forEach(item => {
-    if (item && typeof item === 'object') {
-      bucket.push(item)
-    }
-  })
-}
-
-function pushSingleTarget(bucket, value, fallbackType) {
-  if (!value || typeof value !== 'object') return
-  const target = Object.assign({}, value)
-  if (!target.type && fallbackType) {
-    target.type = fallbackType
-  }
-  bucket.push(target)
-}
-
-function extractTargetsFromChart(chart) {
-  const source = parseObjectValue(chart)
-  const bucket = []
-  if (!source || typeof source !== 'object') return bucket
-
-  pushArrayTargets(bucket, source.targets)
-  pushArrayTargets(bucket, source.objects)
-  pushArrayTargets(bucket, source.visibleObjects)
-  pushArrayTargets(bucket, source.visible_objects)
-  pushArrayTargets(bucket, source.bodies)
-  pushArrayTargets(bucket, source.celestialBodies)
-  pushArrayTargets(bucket, source.celestial_objects)
-  pushArrayTargets(bucket, source.recommendations)
-  pushArrayTargets(bucket, source.recommended)
-  pushArrayTargets(bucket, source.planets)
-  pushArrayTargets(bucket, source.stars)
-  pushArrayTargets(bucket, source.constellations)
-  pushArrayTargets(bucket, source.deepSky)
-  pushArrayTargets(bucket, source.deep_sky)
-  pushArrayTargets(bucket, source.meteorShowers)
-  pushArrayTargets(bucket, source.meteor_showers)
-
-  pushSingleTarget(bucket, source.moon, 'moon')
-
-  if (source.data && source.data !== source) {
-    bucket.push(...extractTargetsFromChart(source.data))
-  }
-
-  if (source.result && source.result !== source) {
-    bucket.push(...extractTargetsFromChart(source.result))
-  }
-
-  return bucket
-}
-
-function uniqueTargets(targets) {
-  const seen = {}
-  const result = []
-  targets.forEach((target, index) => {
-    const normalized = normalizeTarget(target, index)
-    const key = normalized.key || normalized.name
-    if (!seen[key]) {
-      seen[key] = true
-      result.push(normalized)
-    }
-  })
-  return result
-}
-
-function chartText(chart, keys, fallback) {
-  const source = parseObjectValue(chart) || {}
-  for (let index = 0; index < keys.length; index += 1) {
-    const key = keys[index]
-    if (hasValue(source[key])) return String(source[key])
-    if (source.data && hasValue(source.data[key])) return String(source.data[key])
-    if (source.result && hasValue(source.result[key])) return String(source.result[key])
-  }
-  return fallback || ''
-}
-
-function detailText(value) {
-  const source = parseObjectValue(value)
-  if (!source) return toText(value, '')
-  return toText(
-    source.answer ||
-    source.detail ||
-    source.description ||
-    source.summary ||
-    source.text ||
-    source.content ||
-    source.message,
-    ''
-  )
-}
-
-function findDetailObject(value, selectedName) {
-  const source = parseObjectValue(value)
-  if (!source || typeof source !== 'object') return null
-
-  const selectedKey = toKey(selectedName)
-  const candidates = []
-  pushSingleTarget(candidates, source.object)
-  pushSingleTarget(candidates, source.target)
-  pushSingleTarget(candidates, source.detail)
-  pushArrayTargets(candidates, source.targets)
-  pushArrayTargets(candidates, source.objects)
-  pushArrayTargets(candidates, source.facts)
-
-  for (let index = 0; index < candidates.length; index += 1) {
-    const item = candidates[index]
-    if (!selectedKey) return item
-    if (toKey(item.key || item.name || item.objectName || item.title) === selectedKey) {
-      return item
-    }
-  }
-
-  return source.name || source.objectName || source.title ? source : null
-}
-
-function normalizeQuery(query) {
-  if (!query) return {}
-  if (typeof query === 'string') {
-    try {
-      return JSON.parse(query)
-    } catch (error) {
-      return {}
-    }
-  }
-  if (query.data && typeof query.data === 'string') {
-    try {
-      return Object.assign({}, query, JSON.parse(query.data))
-    } catch (error) {
-      return query
-    }
-  }
-  if (query.data && typeof query.data === 'object') {
-    return Object.assign({}, query, query.data)
-  }
-  return query
 }
 
 export default {
   data: {
-    pageTitle: 'SkyMate 天文助手',
-    pageTag: '首页',
     mode: 'home',
-    locationName: '当前位置',
-    verdict: '唤醒乐奇后，我会帮你判断今晚值不值得看星星。',
-    condition: '等待眼镜位置、时间、天气和天体工具结果。',
-    assistantLine: '你可以直接说：乐奇，今晚适合观星吗？',
-    dataTime: '',
-    dataSource: SKY_CHART_ENDPOINT,
-    dataMeta: '首页星体只是展示，真实结果会在工具返回后出现。',
-    dataMetaDisplay: 'none',
-    hasRealData: false,
-    currentObjectKey: 'moon',
-    currentObject: PRESET_OBJECTS.moon,
+    pageTitle: 'SkyMate 观星助手',
+    pageTag: '首页',
+    locationName: '等待位置',
+    verdict: '我会先判断值不值得出门。',
+    condition: '可以用 Craft 测试按钮，或在真机上用语音提问。',
+    assistantLine: '你可以问：今晚苏州能看到什么星星？',
+    tip: '第一版不依赖平台插件，直接请求 sky.eunoia.top。',
+    eventStatus: 'event: waiting',
+    asrStatus: 'asr: idle',
+    requestStatus: 'request: idle',
+    debugText: 'ready',
+    buildVersion: BUILD_VERSION,
+    selectedKey: 'jupiter',
+    selectedObject: FALLBACK_TARGETS[0],
     visibleObjects: FALLBACK_TARGETS,
-
     homeDisplay: 'block',
     chatDisplay: 'none',
+    loadingDisplay: 'none',
     overviewDisplay: 'none',
     detailDisplay: 'none',
     locateDisplay: 'none',
-
-    tip: '首页会先做简短引导；进入对话后，工具结果会变成可点击的星体。'
+    errorDisplay: 'none'
   },
 
   onLoad(rawQuery) {
-    const query = normalizeQuery(rawQuery)
-    const chartResult = query.skyChart || query.chart || query.rawResult || query.result
-    const targets = parseTargets(query.targets || query.objects || query.visibleObjects)
-    const chartTargets = extractTargetsFromChart(chartResult)
-    const realTargets = targets.length ? targets : chartTargets
-    const normalizedObjects = uniqueTargets(realTargets.length ? realTargets : FALLBACK_TARGETS).slice(0, 4)
+    console.log('[SkyMate] page onLoad', rawQuery || {})
+    const query = queryFromRaw(rawQuery)
+    const chart = parseJsonMaybe(query.skyChart || query.chart || query.rawResult || query.result)
+    const targets = parseJsonMaybe(query.targets)
+    const userText = query.userText || query.prompt || query.question || query.message || query.input
+    const placeText = userText || query.locationName || query.city || query.location || ''
+    const queryPlace = placeFromQuery(query)
 
-    const selectedName = query.selectedObject || query.object || query.target || ''
-    const mode = this.normalizeMode(query.mode, realTargets.length, selectedName)
-    const detailObject = findDetailObject(query.objectDetail || query.facts, selectedName)
-    const detailAnswer = detailText(query.detailAnswer || query.objectDetail || query.detail || '')
-    const resolvedObject = this.resolveObject(selectedName, normalizedObjects)
-    const currentObject = detailObject || detailAnswer
-      ? this.mergeObjectDetail(resolvedObject, detailObject, detailAnswer)
-      : resolvedObject
+    if (Array.isArray(targets) || chart) {
+      this.showChartResult({
+        chart,
+        targets: Array.isArray(targets) ? targets : null,
+        locationName: text(query.locationName || query.city || query.location, '当前位置'),
+        source: 'page-query'
+      })
+      return
+    }
 
+    if (queryPlace) {
+      this.setData({
+        assistantLine: '收到经纬度，正在查当前位置星空。',
+        debugText: 'page-query lat/lon'
+      })
+      this.loadSkyChart(queryPlace)
+      return
+    }
+
+    if (placeText || query.mode === 'loading') {
+      this.setData({
+        assistantLine: `收到问题：${userText}`,
+        debugText: userText ? 'page-query userText' : 'page-query location/loading'
+      })
+      this.handleUserText(placeText || '今晚苏州能看到什么')
+      return
+    }
+
+    this.applyMode(text(query.mode, 'home'))
+  },
+
+  onShow() {
+    console.log('[SkyMate] page onShow')
+  },
+
+  onReady() {
+    console.log('[SkyMate] page onReady')
+  },
+
+  onKeyUp(event) {
+    const code = event && event.code
+    console.log('[SkyMate] key up', code)
+    this.reportEvent(`key:${code || 'unknown'}`)
+
+    if (code === 'Backspace' || code === 'Escape' || code === 'Back') {
+      if (event && event.preventDefault) event.preventDefault()
+      if (event && event.stopPropagation) event.stopPropagation()
+      this.openHome()
+      return
+    }
+
+    if (code === 'Enter' || code === 'GlobalHook') {
+      if (event && event.preventDefault) event.preventDefault()
+      this.runSuzhouDemo()
+    }
+  },
+
+  onVoiceWakeup(event) {
+    console.log('[SkyMate] voice wakeup', event || {})
+    this.reportEvent('voiceWakeup')
+    this.startAsr()
+  },
+
+  reportEvent(name) {
+    console.log('[SkyMate] page event', name)
     this.setData({
-      visibleObjects: normalizedObjects,
-      locationName: toText(query.locationName || query.location || query.city || chartText(chartResult, ['locationName', 'location', 'city'], ''), '当前位置'),
-      verdict: toText(query.verdict || query.answer || query.conclusion || chartText(chartResult, ['verdict', 'conclusion', 'summary'], ''), this.data.verdict),
-      condition: toText(query.condition || query.weather || query.weatherSummary || chartText(chartResult, ['condition', 'weather', 'weatherSummary'], ''), this.data.condition),
-      assistantLine: toText(query.assistantLine || query.prompt, realTargets.length ? '这些是真实星图数据筛出的目标，点一个可以听详情。' : this.data.assistantLine),
-      dataTime: toText(query.dataTime || query.time || chartText(chartResult, ['dataTime', 'localTime', 'time', 'utc'], ''), ''),
-      dataSource: toText(query.serviceUrl || chartText(chartResult, ['serviceUrl', 'source'], ''), SKY_CHART_ENDPOINT),
-      dataMeta: this.buildDataMeta(realTargets.length, query, chartResult),
-      dataMetaDisplay: realTargets.length ? 'block' : 'none',
-      hasRealData: realTargets.length > 0
+      eventStatus: `event: ${name}`,
+      debugText: `last event: ${name}`
     })
-
-    this.applyState(mode, currentObject.key)
   },
 
-  normalizeMode(value, targetCount, selectedName) {
-    const supportedModes = {
-      home: true,
-      chat: true,
-      overview: true,
-      detail: true,
-      locate: true
-    }
-
-    if (supportedModes[value]) return value
-    if (selectedName) return 'detail'
-    if (targetCount > 0) return 'overview'
-    return 'home'
-  },
-
-  buildDataMeta(targetCount, query, chartResult) {
-    if (!targetCount) {
-      return '首页星体只是展示，真实结果会在工具返回后出现。'
-    }
-
-    const time = toText(query.dataTime || query.time || chartText(chartResult, ['dataTime', 'localTime', 'time', 'utc'], ''), '当前时刻')
-    const source = toText(query.serviceUrl || chartText(chartResult, ['serviceUrl', 'source'], ''), SKY_CHART_ENDPOINT)
-    return `${time} · ${source}`
-  },
-
-  mergeObjectDetail(baseObject, detailObject, detailAnswer) {
-    const normalizedDetail = detailObject ? normalizeTarget(detailObject, 0) : {}
-    const merged = Object.assign({}, baseObject, normalizedDetail)
-    const answer = detailAnswer || detailText(detailObject)
-
-    if (answer) {
-      merged.intro = answer
-      merged.summary = toText(normalizedDetail.summary || baseObject.summary, '这是根据真实星图服务返回的详情整理出的说明。')
-    }
-
-    if (!merged.locateSteps || !merged.locateSteps.length) {
-      merged.locateSteps = baseObject.locateSteps
-    }
-
-    return merged
-  },
-
-  resolveObject(value, visibleObjects) {
-    const key = toKey(value)
-    const objects = visibleObjects && visibleObjects.length ? visibleObjects : this.data.visibleObjects
-
-    for (let index = 0; index < objects.length; index += 1) {
-      const object = objects[index]
-      if (object.key === key || toKey(object.name) === key || toKey(object.englishName) === key) {
-        return object
-      }
-    }
-
-    return objects[0] || PRESET_OBJECTS.moon
-  },
-
-  applyState(mode, objectKey) {
-    const currentObject = this.resolveObject(objectKey, this.data.visibleObjects)
-    const modeKey = this.normalizeMode(mode, this.data.visibleObjects.length, currentObject.key)
-
+  applyMode(mode) {
+    const modeKey = ['home', 'chat', 'loading', 'overview', 'detail', 'locate', 'error'].indexOf(mode) >= 0 ? mode : 'home'
     const titleMap = {
-      home: 'SkyMate 天文助手',
-      chat: '乐奇已唤醒',
-      overview: '今晚可看目标',
-      detail: `${currentObject.name} ${currentObject.englishName}`,
-      locate: `寻找${currentObject.name}`
+      home: 'SkyMate 观星助手',
+      chat: '语音输入',
+      loading: '正在查星空',
+      overview: '今晚推荐',
+      detail: '星体详情',
+      locate: '怎么找',
+      error: '暂时查不到'
     }
-
     const tagMap = {
       home: '首页',
-      chat: '对话',
+      chat: '聆听',
+      loading: '查询中',
       overview: '总览',
       detail: '详情',
-      locate: '寻找'
-    }
-
-    const tipMap = {
-      home: '说“乐奇，今晚适合观星吗”，进入对话后我会结合天气和星图判断。',
-      chat: '我会先拿当前位置和时间，再调用天气与天体工具。',
-      overview: '点一个星体，我就切到它的详情；用户语音追问时也可以由 AI 自动打开。',
-      detail: `当前聚焦 ${currentObject.name}，适合继续问它怎么找。`,
-      locate: `按大致方向找 ${currentObject.name} 就行，不需要追求精确角度。`
+      locate: '定位',
+      error: '兜底'
     }
 
     this.setData({
+      mode: modeKey,
       pageTitle: titleMap[modeKey],
       pageTag: tagMap[modeKey],
-      mode: modeKey,
-      currentObjectKey: currentObject.key,
-      currentObject,
       homeDisplay: modeKey === 'home' ? 'block' : 'none',
       chatDisplay: modeKey === 'chat' ? 'block' : 'none',
+      loadingDisplay: modeKey === 'loading' ? 'block' : 'none',
       overviewDisplay: modeKey === 'overview' ? 'block' : 'none',
       detailDisplay: modeKey === 'detail' ? 'block' : 'none',
       locateDisplay: modeKey === 'locate' ? 'block' : 'none',
-      tip: tipMap[modeKey]
+      errorDisplay: modeKey === 'error' ? 'block' : 'none'
     })
   },
 
   startChat() {
-    this.applyState('chat', this.data.currentObjectKey)
+    this.reportEvent('startChat')
+    this.applyMode('chat')
+  },
+
+  startAsr() {
+    this.reportEvent('startAsr')
+    this.applyMode('chat')
+    this.setData({
+      asrStatus: 'asr: listening',
+      assistantLine: '我在听，你可以说：今晚苏州能看到什么？'
+    })
+
+    const Recognition = getSpeechRecognitionCandidate()
+
+    if (!Recognition) {
+      if (this.startWxAsr()) return
+      console.log('[SkyMate] SpeechRecognition not available, fallback to Suzhou demo')
+      this.setData({
+        asrStatus: 'asr: unavailable',
+        assistantLine: 'Craft 里可能没有 ASR，我先用苏州测试链路跑一遍。'
+      })
+      this.runSuzhouDemo()
+      return
+    }
+
+    const recognition = new Recognition()
+    configureSpeechRecognition(recognition)
+
+    recognition.onresult = (event) => {
+      const result = event && event.results && event.results[0] && event.results[0][0]
+      const transcript = result ? result.transcript : ''
+      console.log('[SkyMate] ASR result', transcript)
+      this.setData({
+        asrStatus: 'asr: success',
+        assistantLine: transcript ? `我听到：${transcript}` : '我听到了，正在判断。'
+      })
+      this.handleUserText(transcript || '今晚苏州能看到什么')
+    }
+
+    recognition.onerror = (event) => {
+      console.log('[SkyMate] ASR error', event || {})
+      this.setData({
+        asrStatus: 'asr: error',
+        assistantLine: '这次语音没有成功，我先用苏州测试链路帮你验证。'
+      })
+      this.runSuzhouDemo()
+    }
+
+    recognition.onend = () => {
+      console.log('[SkyMate] ASR end')
+    }
+
+    recognition.start()
+  },
+
+  startWxAsr() {
+    const runtime = typeof wx !== 'undefined' ? wx : null
+    if (!runtime || typeof runtime.getSpeechRecognizer !== 'function') {
+      return false
+    }
+
+    try {
+      const recognizer = runtime.getSpeechRecognizer()
+      if (!recognizer) return false
+
+      console.log('[SkyMate] wx speech recognizer available')
+      this.setData({
+        asrStatus: 'asr: wx-listening',
+        assistantLine: '我正在调用 Rokid 语音识别。'
+      })
+
+      const onResult = (event) => {
+        const result = event || {}
+        const transcript = result.transcript ||
+          result.text ||
+          result.result ||
+          (result.results && result.results[0] && result.results[0][0] && result.results[0][0].transcript) ||
+          ''
+        console.log('[SkyMate] wx ASR result', transcript, result)
+        this.setData({
+          asrStatus: 'asr: wx-success',
+          assistantLine: transcript ? `我听到：${transcript}` : '我听到了，正在判断。'
+        })
+        this.handleUserText(transcript || '今晚苏州能看到什么')
+      }
+
+      const onError = (error) => {
+        console.log('[SkyMate] wx ASR error', error || {})
+        this.setData({
+          asrStatus: 'asr: wx-error',
+          assistantLine: 'Rokid 语音识别没有成功，我先跑苏州测试链路。'
+        })
+        this.runSuzhouDemo()
+      }
+
+      if (typeof recognizer.onResult === 'function') recognizer.onResult(onResult)
+      else recognizer.onresult = onResult
+
+      if (typeof recognizer.onError === 'function') recognizer.onError(onError)
+      else recognizer.onerror = onError
+
+      if (typeof recognizer.onEnd === 'function') recognizer.onEnd(() => console.log('[SkyMate] wx ASR end'))
+      else recognizer.onend = () => console.log('[SkyMate] wx ASR end')
+
+      if (typeof recognizer.start === 'function') {
+        recognizer.start({ lang: 'zh-CN' })
+        return true
+      }
+
+      if (typeof recognizer.startRecognition === 'function') {
+        recognizer.startRecognition({ lang: 'zh-CN' })
+        return true
+      }
+
+      return false
+    } catch (error) {
+      console.log('[SkyMate] wx ASR setup failed', error || {})
+      return false
+    }
+  },
+
+  handleUserText(input) {
+    this.reportEvent('handleUserText')
+    const city = cityFromText(input)
+    if (city) {
+      this.loadSkyChart(city)
+      return
+    }
+    this.loadCurrentLocationOrFallback()
+  },
+
+  runCurrentLocation() {
+    this.reportEvent('runCurrentLocation')
+    this.loadCurrentLocationOrFallback()
+  },
+
+  async loadCurrentLocationOrFallback() {
+    this.applyMode('loading')
+    this.setData({
+      locationName: '正在定位',
+      requestStatus: 'location: resolving',
+      debugText: 'try wx/navigator location',
+      assistantLine: '我先尝试读取设备当前位置。'
+    })
+
+    try {
+      const place = await this.readRuntimeLocation()
+      this.loadSkyChart(place)
+    } catch (error) {
+      console.log('[SkyMate] location unavailable', error || {})
+      this.setData({
+        requestStatus: 'location: fallback',
+        debugText: errorText(error)
+      })
+      this.loadSkyChart(CITY_COORDS[0])
+    }
+  },
+
+  readRuntimeLocation() {
+    const root = getRuntimeRoot()
+
+    if (root.wx && typeof root.wx.getLocation === 'function') {
+      return new Promise((resolve, reject) => {
+        try {
+          root.wx.getLocation({
+            type: 'wgs84',
+            success: (res) => {
+              const lat = parseFloat(res && (res.latitude || res.lat))
+              const lon = parseFloat(res && (res.longitude || res.lon || res.lng))
+              if (isNaN(lat) || isNaN(lon)) {
+                reject(new Error('wx.getLocation returned invalid coordinates'))
+                return
+              }
+              resolve({ name: '当前位置', lat, lon })
+            },
+            fail: (error) => reject(error || new Error('wx.getLocation failed'))
+          })
+        } catch (error) {
+          reject(error)
+        }
+      })
+    }
+
+    const navigator = root.navigator
+    if (navigator && navigator.geolocation && typeof navigator.geolocation.getCurrentPosition === 'function') {
+      return new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            const coords = position && position.coords
+            const lat = parseFloat(coords && coords.latitude)
+            const lon = parseFloat(coords && coords.longitude)
+            if (isNaN(lat) || isNaN(lon)) {
+              reject(new Error('navigator.geolocation returned invalid coordinates'))
+              return
+            }
+            resolve({ name: '当前位置', lat, lon })
+          },
+          (error) => reject(error || new Error('navigator.geolocation failed')),
+          {
+            enableHighAccuracy: false,
+            timeout: 5000,
+            maximumAge: 300000
+          }
+        )
+      })
+    }
+
+    return Promise.reject(new Error('location API unavailable'))
+  },
+
+  runSuzhouDemo() {
+    this.reportEvent('runSuzhouDemo')
+    this.loadSkyChart(CITY_COORDS[0])
+  },
+
+  runShanghaiDemo() {
+    this.reportEvent('runShanghaiDemo')
+    this.loadSkyChart(CITY_COORDS[2])
+  },
+
+  async loadSkyChart(city) {
+    const place = city || CITY_COORDS[0]
+
+    this.applyMode('loading')
+    this.setData({
+      locationName: place.name,
+      requestStatus: 'request: loading',
+      assistantLine: `正在查${place.name}今晚的星空。`,
+      debugText: `fetch ${SKY_CHART_ENDPOINT}`
+    })
+
+    const payload = Object.assign({}, SKY_OPTIONS, {
+      lat: place.lat,
+      lon: place.lon,
+      latitude: place.lat,
+      longitude: place.lon
+    })
+
+    try {
+      const response = await this.fetchSkyChart(payload)
+      const chart = await response.json()
+      console.log('[SkyMate] sky chart result', chart)
+      this.showChartResult({
+        chart,
+        locationName: place.name,
+        source: 'sky-chart'
+      })
+    } catch (error) {
+      console.log('[SkyMate] sky chart failed', error || {})
+      this.showFallback(place.name, errorText(error))
+    }
+  },
+
+  async fetchSkyChart(payload) {
+    console.log('[SkyMate] sky fetch start', {
+      url: SKY_CHART_ENDPOINT,
+      lat: payload.lat,
+      lon: payload.lon,
+      total_limit: payload.total_limit
+    })
+    this.setData({
+      requestStatus: 'request: fetch start',
+      debugText: `POST lat=${payload.lat} lon=${payload.lon} limit=${payload.total_limit}`
+    })
+
+    try {
+      const response = await fetch(SKY_CHART_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'User-Agent': 'Rizon/1.0'
+        },
+        body: JSON.stringify(payload)
+      })
+
+      if (!response.ok) throw new Error(await responseErrorText(response, 'HTTP'))
+
+      console.log('[SkyMate] sky fetch ok', response.status)
+      this.setData({
+        requestStatus: `request: http ${response.status}`,
+        debugText: 'fetch ok with User-Agent'
+      })
+      return response
+    } catch (firstError) {
+      console.log('[SkyMate] sky fetch primary failed', errorText(firstError))
+      this.setData({
+        requestStatus: 'request: retry no-UA',
+        debugText: errorText(firstError)
+      })
+    }
+
+    const retryPayload = {
+      lat: payload.lat,
+      lon: payload.lon,
+      latitude: payload.lat,
+      longitude: payload.lon,
+      total_limit: payload.total_limit || 28
+    }
+
+    const retryResponse = await fetch(SKY_CHART_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-User-Agent': 'Rizon/1.0'
+      },
+      body: JSON.stringify(retryPayload)
+    })
+
+    if (!retryResponse.ok) {
+      const retryError = await responseErrorText(retryResponse, 'retry HTTP')
+      console.log('[SkyMate] sky fetch retry POST failed', retryError)
+      this.setData({
+        requestStatus: 'request: retry GET',
+        debugText: retryError
+      })
+
+      const getUrl = `${SKY_CHART_ENDPOINT}?${queryStringFromPayload(retryPayload)}`
+      const getResponse = await fetch(getUrl, {
+        method: 'GET',
+        headers: {
+          'X-User-Agent': 'Rizon/1.0'
+        }
+      })
+
+      if (!getResponse.ok) throw new Error(await responseErrorText(getResponse, 'GET HTTP'))
+
+      console.log('[SkyMate] sky fetch GET ok', getResponse.status)
+      this.setData({
+        requestStatus: `request: GET http ${getResponse.status}`,
+        debugText: 'fetch ok with GET query'
+      })
+      return getResponse
+    }
+
+    console.log('[SkyMate] sky fetch retry ok', retryResponse.status)
+    this.setData({
+      requestStatus: `request: retry http ${retryResponse.status}`,
+      debugText: 'fetch ok with minimal payload'
+    })
+    return retryResponse
+  },
+
+  showChartResult(options) {
+    const chart = options && options.chart
+    const providedTargets = options && options.targets
+    const locationName = text(options && options.locationName, '当前位置')
+    const targets = providedTargets ? providedTargets.map((item, index) => normalizeTarget(item, index)) : pickTargets(chart)
+    const first = targets[0] || FALLBACK_TARGETS[0]
+    const source = text(options && options.source, 'sky-chart')
+    const verdict = targets.length
+      ? `今晚${locationName}可以优先看${targets.slice(0, 2).map(item => item.name).join('和')}。`
+      : `今晚${locationName}可以先看亮星和亮行星。`
+
+    this.setData({
+      visibleObjects: targets,
+      selectedKey: first.key,
+      selectedObject: first,
+      locationName,
+      verdict,
+      condition: '城市里优先看亮行星和亮星，深空目标需要望远镜或更暗的环境。',
+      assistantLine: '我已经把最适合普通用户看的目标放到卡片里了。',
+      requestStatus: `request: success (${source})`,
+      debugText: `targets: ${targets.length}`
+    })
+    this.applyMode('overview')
+  },
+
+  showFallback(locationName, reason) {
+    console.log('[SkyMate] fallback reason', reason || '')
+    this.setData({
+      visibleObjects: FALLBACK_TARGETS,
+      selectedKey: FALLBACK_TARGETS[0].key,
+      selectedObject: FALLBACK_TARGETS[0],
+      locationName,
+      verdict: `我这边暂时查不到${locationName}的实时星图。`,
+      condition: '可以先按一般情况看月亮、亮行星和亮星；深空目标不要在城市里强求。',
+      assistantLine: '外部接口失败时会走兜底展示，方便你继续调试页面。',
+      requestStatus: `request: fallback ${reason ? `(${reason})` : ''}`,
+      debugText: reason || 'fetch failed'
+    })
+    this.applyMode('overview')
   },
 
   openHome() {
-    this.applyState('home', this.data.currentObjectKey)
+    this.reportEvent('openHome')
+    this.applyMode('home')
   },
 
   openOverview() {
-    this.applyState('overview', this.data.currentObjectKey)
+    this.reportEvent('openOverview')
+    this.applyMode('overview')
   },
 
   openDetail() {
-    this.applyState('detail', this.data.currentObjectKey)
+    this.reportEvent('openDetail')
+    this.applyMode('detail')
   },
 
   openLocate() {
-    this.applyState('locate', this.data.currentObjectKey)
+    this.reportEvent('openLocate')
+    this.applyMode('locate')
   },
 
   selectObject(event) {
-    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || (event && event.target && event.target.dataset) || {}
-    const objectKey = dataset.key || this.data.currentObjectKey
-    this.applyState('detail', objectKey)
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {}
+    const key = dataset.key || this.data.selectedKey
+    const target = this.data.visibleObjects.find(item => item.key === key) || this.data.visibleObjects[0] || FALLBACK_TARGETS[0]
+    this.reportEvent(`selectObject:${key}`)
+    this.setData({
+      selectedKey: target.key,
+      selectedObject: target
+    })
+    this.applyMode('detail')
   }
 }
 </script>
 
 <page>
-  <view class="shell">
-    <view class="header">
-      <view class="brand">
-        <text class="brand-mark">S</text>
-        <view class="brand-copy">
-          <text class="title">{{ pageTitle }}</text>
-          <text class="subtitle">{{ locationName }}</text>
-        </view>
+  <view class="shell" tabindex="0" focusable="true" bindkeyup="onKeyUp">
+    <view class="topbar">
+      <view>
+        <text class="brand">SkyMate</text>
+        <text class="subtitle">{{ locationName }}</text>
       </view>
-      <text class="tag">{{ pageTag }}</text>
+      <text class="pill">{{ pageTag }}</text>
     </view>
 
-    <view class="home-panel" style="display: {{ homeDisplay }};">
-      <view class="hero-row">
-        <view class="orbit-scene">
-          <text class="scene-label">SkyMate</text>
-          <text class="horizon-line"></text>
-          <text class="home-star home-star-a">·</text>
-          <text class="home-star home-star-b">·</text>
-          <text class="home-star home-star-c">·</text>
-          <text class="home-moon">◐</text>
-          <text class="home-planet">●</text>
-        </view>
-        <view class="intro">
-          <text class="eyebrow">智能眼镜观星助手</text>
-          <text class="intro-title">抬头之前，先判断值不值得出门。</text>
-          <text class="intro-copy">我会结合你眼镜的位置、当前时间、天气和天体工具，给出短结论。</text>
-        </view>
-      </view>
-
-      <view class="guide-row">
-        <view class="guide-step active-step">
-          <text class="step-index">1</text>
-          <text class="step-copy">唤醒乐奇</text>
-        </view>
-        <view class="guide-step">
-          <text class="step-index">2</text>
-          <text class="step-copy">询问今晚能看什么</text>
-        </view>
-        <view class="guide-step">
-          <text class="step-index">3</text>
-          <text class="step-copy">点选星体听详情</text>
-        </view>
-      </view>
-
-      <button class="wide-action primary-action" bindtap="startChat">进入对话界面</button>
+    <view class="debug-strip">
+      <text class="debug-strip-line">{{ buildVersion }}</text>
+      <text class="debug-strip-line">{{ requestStatus }}</text>
+      <text class="debug-strip-line">{{ debugText }}</text>
     </view>
 
-    <view class="chat-panel" style="display: {{ chatDisplay }};">
-      <view class="chat-stream">
-        <view class="bubble assistant-bubble">
-          <text class="bubble-name">乐奇</text>
-          <text class="bubble-text">我在。你可以问：今晚适合观星吗？</text>
-        </view>
-        <view class="bubble user-bubble">
-          <text class="bubble-name">你</text>
-          <text class="bubble-text">今晚能看到什么？</text>
-        </view>
-      <view class="tool-card">
-          <text class="tool-title">正在准备观星判断</text>
-          <text class="tool-line">当前位置：get_context_param</text>
-          <text class="tool-line">当前时间：get_current_time</text>
-          <text class="tool-line">天空目标：sky_chart → sky.eunoia.top</text>
-        </view>
+    <view class="panel home" style="display: {{ homeDisplay }};">
+      <view class="sky-preview">
+        <text class="star s1">✦</text>
+        <text class="star s2">✧</text>
+        <text class="star s3">✦</text>
+        <text class="planet-dot"></text>
+      </view>
+      <view class="hero-copy">
+        <text class="kicker">智能眼镜观星助手</text>
+        <text class="headline">先判断值不值得出门。</text>
+        <text class="body">这版不依赖平台插件。按钮、ASR、外部星图请求和页面切换都在同一个 Ink 页面里完成。</text>
       </view>
 
-      <button class="wide-action secondary-action" bindtap="openHome">返回首页</button>
+      <view class="button-grid">
+        <button class="btn primary" bindtap="runCurrentLocation">当前位置</button>
+        <button class="btn primary" bindtap="runSuzhouDemo">测试苏州星空</button>
+        <button class="btn secondary" bindtap="runShanghaiDemo">测试上海星空</button>
+        <button class="btn secondary" bindtap="startAsr">ASR 语音输入</button>
+        <button class="btn ghost" bindtap="startChat">进入对话页</button>
+      </view>
     </view>
 
-    <view class="overview-panel" style="display: {{ overviewDisplay }};">
-      <view class="verdict-band">
-        <text class="verdict">{{ verdict }}</text>
-        <text class="condition">{{ condition }}</text>
-        <text class="data-meta" style="display: {{ dataMetaDisplay }};">{{ dataMeta }}</text>
+    <view class="panel chat" style="display: {{ chatDisplay }};">
+      <text class="headline small">我在听。</text>
+      <text class="body">真机上可以直接说“今晚苏州能看到什么”。Craft 如果没有 ASR，会自动跑苏州测试链路。</text>
+      <view class="button-grid">
+        <button class="btn primary" bindtap="startAsr">开始 ASR</button>
+        <button class="btn secondary" bindtap="runCurrentLocation">读取定位</button>
+        <button class="btn secondary" bindtap="runSuzhouDemo">不用语音，直接测试</button>
+        <button class="btn ghost" bindtap="openHome">返回首页</button>
+      </view>
+    </view>
+
+    <view class="panel loading" style="display: {{ loadingDisplay }};">
+      <view class="loader"></view>
+      <text class="headline small">正在查询星空</text>
+      <text class="body">我正在请求 sky.eunoia.top，并把结果整理成 2 到 4 个适合普通用户看的目标。</text>
+    </view>
+
+    <view class="panel overview" style="display: {{ overviewDisplay }};">
+      <view class="verdict">
+        <text class="headline small">{{ verdict }}</text>
+        <text class="body">{{ condition }}</text>
       </view>
 
-      <view class="sky-stage">
-        <text class="direction west">西</text>
-        <text class="direction south">南</text>
-        <text class="direction east">东</text>
-        <text class="alt-line alt-high">高空</text>
-        <text class="alt-line alt-low">低空</text>
-        <text
-          class="sky-object {{ skyItem.className }}"
-          ink:for="{{ visibleObjects }}"
-          ink:for-item="skyItem"
-          ink:key="key"
-          data-key="{{ skyItem.key }}"
-          bindtap="selectObject"
-          style="left: {{ skyItem.left }}; top: {{ skyItem.top }};"
-        >
-          {{ skyItem.name }}
-        </text>
-      </view>
-
-      <view class="object-grid">
+      <view class="target-list">
         <button
-          class="object-button {{ objectItem.className }}"
+          class="target-card {{ item.typeClass }}"
           ink:for="{{ visibleObjects }}"
-          ink:for-item="objectItem"
+          ink:for-item="item"
           ink:key="key"
-          data-key="{{ objectItem.key }}"
+          data-key="{{ item.key }}"
           bindtap="selectObject"
         >
-          <text class="object-button-name">{{ objectItem.name }}</text>
-          <text class="object-button-meta">{{ objectItem.typeLabel }} · {{ objectItem.direction }}</text>
+          <text class="target-name">{{ item.name }}</text>
+          <text class="target-meta">{{ item.type }} · {{ item.direction }} · {{ item.altitude }}</text>
+          <text class="target-tip">点我看详情</text>
         </button>
       </view>
 
-      <view class="action-row overview-actions">
-        <button class="action secondary-action" bindtap="openHome">返回首页</button>
+      <view class="button-grid">
+        <button class="btn secondary" bindtap="runSuzhouDemo">刷新苏州</button>
+        <button class="btn ghost" bindtap="openHome">返回首页</button>
       </view>
     </view>
 
-    <view class="detail-panel" style="display: {{ detailDisplay }};">
-      <view class="detail-hero {{ currentObject.className }}">
-        <view class="detail-main">
-          <text class="detail-type">{{ currentObject.typeLabel }}</text>
-          <text class="detail-name">{{ currentObject.name }}</text>
-          <text class="detail-en">{{ currentObject.englishName }}</text>
+    <view class="panel detail" style="display: {{ detailDisplay }};">
+      <text class="kicker">{{ selectedObject.type }}</text>
+      <text class="headline small">{{ selectedObject.name }}</text>
+      <view class="metric-row">
+        <view class="metric">
+          <text class="metric-label">方向</text>
+          <text class="metric-value">{{ selectedObject.direction }}</text>
         </view>
-        <view class="detail-orbit">
-          <text class="detail-dot">●</text>
+        <view class="metric">
+          <text class="metric-label">高度</text>
+          <text class="metric-value">{{ selectedObject.altitude }}</text>
+        </view>
+        <view class="metric">
+          <text class="metric-label">亮度</text>
+          <text class="metric-value">{{ selectedObject.magnitude }}</text>
         </view>
       </view>
-
-      <view class="detail-info">
-        <text class="detail-intro">{{ currentObject.intro }}</text>
-        <view class="metric-row">
-          <view class="metric">
-            <text class="metric-label">方向</text>
-            <text class="metric-value">{{ currentObject.direction }}</text>
-          </view>
-          <view class="metric">
-            <text class="metric-label">高度</text>
-            <text class="metric-value">{{ currentObject.altitude }}</text>
-          </view>
-          <view class="metric">
-            <text class="metric-label">时间</text>
-            <text class="metric-value">{{ currentObject.bestTime }}</text>
-          </view>
-        </view>
-        <text class="detail-summary">{{ currentObject.summary }}</text>
-      </view>
-
-      <view class="action-row">
-        <button class="action primary-action" bindtap="openLocate">寻找它</button>
-        <button class="action secondary-action" bindtap="openOverview">返回总览</button>
-        <button class="action secondary-action" bindtap="openHome">返回首页</button>
+      <text class="body">{{ selectedObject.intro }}</text>
+      <view class="button-grid">
+        <button class="btn primary" bindtap="openLocate">怎么找</button>
+        <button class="btn secondary" bindtap="openOverview">返回总览</button>
+        <button class="btn ghost" bindtap="openHome">返回首页</button>
       </view>
     </view>
 
-    <view class="locate-panel" style="display: {{ locateDisplay }};">
-      <view class="locate-compass">
-        <text class="compass-target">{{ currentObject.name }}</text>
-        <text class="compass-direction">{{ currentObject.direction }}</text>
-        <text class="compass-arc"></text>
+    <view class="panel locate" style="display: {{ locateDisplay }};">
+      <text class="kicker">寻找 {{ selectedObject.name }}</text>
+      <text class="headline small">朝 {{ selectedObject.direction }} 看。</text>
+      <text class="body">{{ selectedObject.locate }}</text>
+      <view class="compass">
+        <text class="compass-label">{{ selectedObject.direction }}</text>
       </view>
-
-      <view class="locate-steps">
-        <text class="locate-title">怎么找</text>
-        <text class="step-line">1. {{ currentObject.locateSteps[0] }}</text>
-        <text class="step-line">2. {{ currentObject.locateSteps[1] }}</text>
-        <text class="step-line">3. {{ currentObject.locateSteps[2] }}</text>
-      </view>
-
-      <view class="action-row">
-        <button class="action primary-action" bindtap="openDetail">查看详情</button>
-        <button class="action secondary-action" bindtap="openOverview">返回总览</button>
-        <button class="action secondary-action" bindtap="openHome">返回首页</button>
+      <view class="button-grid">
+        <button class="btn secondary" bindtap="openDetail">返回详情</button>
+        <button class="btn ghost" bindtap="openOverview">返回总览</button>
       </view>
     </view>
 
-    <view class="footer">
-      <text class="assistant-line">{{ assistantLine }}</text>
-      <text class="footer-tip">{{ tip }}</text>
+    <view class="panel error" style="display: {{ errorDisplay }};">
+      <text class="headline small">暂时查不到实时数据。</text>
+      <text class="body">可以先按一般情况看月亮、亮行星和亮星。Craft 里可以继续用测试按钮验证页面事件。</text>
+      <button class="btn primary" bindtap="runSuzhouDemo">重新测试</button>
+    </view>
+
+    <view class="status">
+      <text class="status-line">{{ assistantLine }}</text>
+      <text class="status-chip">{{ eventStatus }}</text>
+      <text class="status-chip">{{ asrStatus }}</text>
+      <text class="status-chip">{{ requestStatus }}</text>
+      <text class="debug">{{ debugText }}</text>
     </view>
   </view>
 </page>
@@ -863,641 +1047,332 @@ export default {
 <style>
 .shell {
   width: 448px;
-  min-height: 264px;
+  min-height: 150px;
   box-sizing: border-box;
-  overflow: hidden;
+  padding: 8px 10px;
   color: #f4f7f1;
-  background: linear-gradient(150deg, #060807 0%, #101814 46%, #211d13 100%);
-  border: 1px solid rgba(205, 245, 194, 0.18);
-  border-radius: 14px;
-  padding: 12px;
+  background:
+    radial-gradient(circle at 18% 18%, rgba(126, 255, 162, 0.18), transparent 26%),
+    radial-gradient(circle at 88% 10%, rgba(255, 209, 102, 0.12), transparent 24%),
+    linear-gradient(145deg, #050706 0%, #0d1511 48%, #1c1a10 100%);
+  border: 1px solid rgba(180, 244, 188, 0.22);
+  border-radius: 16px;
+  overflow: hidden;
 }
 
-.header {
+.topbar {
   display: flex;
   flex-direction: row;
-  align-items: center;
   justify-content: space-between;
-  margin-bottom: 10px;
+  align-items: flex-start;
+  margin-bottom: 4px;
+}
+
+.debug-strip {
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  min-height: 18px;
+  margin-bottom: 6px;
+  padding: 3px 6px;
+  border-radius: 7px;
+  background: rgba(109, 255, 136, 0.10);
+  border: 1px solid rgba(109, 255, 136, 0.24);
+}
+
+.debug-strip-line {
+  display: block;
+  max-width: 208px;
+  overflow: hidden;
+  color: #8effa6;
+  font-size: 9px;
+  line-height: 12px;
 }
 
 .brand {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-}
-
-.brand-mark {
-  width: 28px;
-  height: 28px;
-  line-height: 28px;
-  text-align: center;
-  margin-right: 8px;
-  border-radius: 7px;
-  color: #07100d;
-  background: #b7f7bf;
-  font-size: 16px;
-  font-weight: 700;
-}
-
-.brand-copy {
-  display: flex;
-  flex-direction: column;
-}
-
-.title {
-  color: #f7ffe9;
-  font-size: 17px;
-  line-height: 20px;
-  font-weight: 700;
+  display: block;
+  font-size: 22px;
+  line-height: 24px;
+  font-weight: 900;
+  letter-spacing: -1px;
 }
 
 .subtitle {
-  color: rgba(244, 247, 241, 0.62);
+  display: block;
+  color: rgba(244, 247, 241, 0.58);
   font-size: 11px;
   line-height: 14px;
 }
 
-.tag {
-  height: 22px;
-  line-height: 22px;
-  padding: 0 8px;
-  border-radius: 6px;
-  color: #b7f7bf;
-  background: rgba(183, 247, 191, 0.12);
-  border: 1px solid rgba(183, 247, 191, 0.26);
-  font-size: 12px;
+.pill {
+  min-width: 42px;
+  height: 24px;
+  line-height: 24px;
+  text-align: center;
+  border-radius: 12px;
+  color: #c9ffd2;
+  background: rgba(64, 255, 94, 0.08);
+  border: 1px solid rgba(64, 255, 94, 0.32);
+  font-size: 11px;
+  font-weight: 700;
 }
 
-.hero-row {
+.panel {
+  display: block;
+}
+
+.home {
   display: flex;
   flex-direction: row;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: 12px;
 }
 
-.orbit-scene {
+.sky-preview {
   position: relative;
-  width: 184px;
-  height: 112px;
-  overflow: hidden;
-  border-radius: 8px;
-  background: radial-gradient(circle at 72% 24%, rgba(250, 223, 142, 0.22), transparent 28%), linear-gradient(180deg, #0a1010, #151a12);
-  border: 1px solid rgba(250, 223, 142, 0.2);
+  width: 150px;
+  height: 118px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(244, 247, 241, 0.12);
+  background: radial-gradient(circle at 50% 68%, rgba(255, 214, 115, 0.24), transparent 10%), #030504;
 }
 
-.scene-label {
+.star {
   position: absolute;
-  left: 12px;
-  top: 10px;
-  color: rgba(244, 247, 241, 0.64);
-  font-size: 11px;
-}
-
-.horizon-line {
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 23px;
-  height: 1px;
-  background: rgba(183, 247, 191, 0.32);
-}
-
-.home-star,
-.home-moon,
-.home-planet {
-  position: absolute;
-  line-height: 1;
-}
-
-.home-star {
-  color: #f4f7f1;
-  font-size: 22px;
-}
-
-.home-star-a {
-  left: 44px;
-  top: 40px;
-}
-
-.home-star-b {
-  left: 96px;
-  top: 22px;
-}
-
-.home-star-c {
-  left: 130px;
-  top: 58px;
-}
-
-.home-moon {
-  right: 22px;
-  top: 26px;
-  color: #f6d67b;
-  font-size: 26px;
-}
-
-.home-planet {
-  left: 76px;
-  bottom: 30px;
-  color: #9ee6ff;
-  font-size: 16px;
-}
-
-.intro {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-
-.eyebrow {
-  color: #b7f7bf;
-  font-size: 11px;
-  line-height: 15px;
-  margin-bottom: 3px;
-}
-
-.intro-title {
-  color: #f7ffe9;
-  font-size: 17px;
-  line-height: 22px;
-  font-weight: 700;
-  margin-bottom: 5px;
-}
-
-.intro-copy {
-  color: rgba(244, 247, 241, 0.72);
-  font-size: 12px;
-  line-height: 17px;
-}
-
-.guide-row {
-  display: flex;
-  flex-direction: row;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.guide-step {
-  flex: 1;
-  height: 48px;
-  box-sizing: border-box;
-  padding: 7px;
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.045);
-  border: 1px solid rgba(244, 247, 241, 0.08);
-}
-
-.active-step {
-  border-color: rgba(183, 247, 191, 0.32);
-  background: rgba(183, 247, 191, 0.1);
-}
-
-.step-index {
-  display: block;
-  color: #f6d67b;
-  font-size: 12px;
-  line-height: 14px;
-  font-weight: 700;
-}
-
-.step-copy {
-  display: block;
-  color: rgba(244, 247, 241, 0.82);
-  font-size: 11px;
-  line-height: 15px;
-}
-
-.chat-stream {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.bubble {
-  width: 310px;
-  box-sizing: border-box;
-  padding: 8px 10px;
-  border-radius: 8px;
-}
-
-.assistant-bubble {
-  background: rgba(183, 247, 191, 0.1);
-  border: 1px solid rgba(183, 247, 191, 0.18);
-}
-
-.user-bubble {
-  margin-left: 112px;
-  background: rgba(246, 214, 123, 0.11);
-  border: 1px solid rgba(246, 214, 123, 0.2);
-}
-
-.bubble-name {
-  display: block;
-  color: rgba(244, 247, 241, 0.54);
-  font-size: 11px;
-  line-height: 14px;
-}
-
-.bubble-text {
-  display: block;
-  color: #f7ffe9;
-  font-size: 12px;
-  line-height: 17px;
-}
-
-.tool-card {
-  padding: 9px 10px;
-  border-radius: 8px;
-  background: rgba(8, 11, 10, 0.54);
-  border: 1px solid rgba(158, 230, 255, 0.18);
-}
-
-.tool-title {
-  display: block;
-  color: #9ee6ff;
-  font-size: 12px;
-  line-height: 16px;
-  font-weight: 700;
-  margin-bottom: 3px;
-}
-
-.tool-line {
-  display: block;
-  color: rgba(244, 247, 241, 0.72);
-  font-size: 11px;
-  line-height: 15px;
-}
-
-.verdict-band {
-  padding: 8px 10px;
-  margin-bottom: 10px;
-  border-radius: 8px;
-  background: linear-gradient(90deg, rgba(183, 247, 191, 0.13), rgba(246, 214, 123, 0.09));
-  border: 1px solid rgba(183, 247, 191, 0.2);
-}
-
-.verdict {
-  display: block;
-  color: #f7ffe9;
+  color: #dfffe4;
   font-size: 14px;
-  line-height: 19px;
+}
+
+.s1 {
+  left: 28px;
+  top: 32px;
+}
+
+.s2 {
+  right: 30px;
+  top: 26px;
+}
+
+.s3 {
+  left: 70px;
+  top: 70px;
+}
+
+.planet-dot {
+  position: absolute;
+  left: 71px;
+  top: 58px;
+  width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  background: #ffd66f;
+  box-shadow: 0 0 18px rgba(255, 214, 111, 0.75);
+}
+
+.hero-copy {
+  flex: 1;
+}
+
+.kicker {
+  display: block;
+  color: #aaf7b8;
+  font-size: 11px;
+  line-height: 15px;
   font-weight: 700;
 }
 
-.condition {
+.headline {
   display: block;
-  color: rgba(244, 247, 241, 0.72);
-  font-size: 11px;
-  line-height: 15px;
+  margin-top: 4px;
+  color: #ffffff;
+  font-size: 22px;
+  line-height: 26px;
+  font-weight: 900;
 }
 
-.data-meta {
+.headline.small {
+  font-size: 15px;
+  line-height: 18px;
+}
+
+.body {
   display: block;
-  color: rgba(183, 247, 191, 0.62);
-  font-size: 10px;
-  line-height: 14px;
   margin-top: 3px;
-}
-
-.sky-stage {
-  position: relative;
-  height: 134px;
-  margin-bottom: 10px;
-  overflow: hidden;
-  border-radius: 8px;
-  background: radial-gradient(circle at 50% 108%, rgba(183, 247, 191, 0.16), transparent 38%), linear-gradient(180deg, #080d0d, #151910);
-  border: 1px solid rgba(244, 247, 241, 0.1);
-}
-
-.direction,
-.alt-line {
-  position: absolute;
-  color: rgba(244, 247, 241, 0.42);
-  font-size: 11px;
+  color: rgba(244, 247, 241, 0.72);
+  font-size: 10px;
   line-height: 13px;
 }
 
-.west {
-  left: 16px;
-  bottom: 9px;
-}
-
-.south {
-  left: 210px;
-  bottom: 9px;
-}
-
-.east {
-  right: 16px;
-  bottom: 9px;
-}
-
-.alt-high {
-  left: 16px;
-  top: 12px;
-}
-
-.alt-low {
-  left: 16px;
-  bottom: 28px;
-}
-
-.sky-object {
-  position: absolute;
-  min-width: 48px;
-  height: 26px;
-  line-height: 26px;
-  text-align: center;
-  padding: 0 7px;
-  border-radius: 7px;
-  font-size: 11px;
-  font-weight: 700;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-}
-
-.object-grid {
+.button-grid {
   display: flex;
   flex-direction: row;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
 }
 
-.overview-actions {
-  margin-top: 9px;
-}
-
-.object-button {
-  flex: 1;
-  height: 52px;
-  padding: 7px;
+.btn {
+  min-width: 78px;
+  height: 26px;
+  line-height: 26px;
+  padding: 0 8px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.055);
+  font-size: 10px;
+  font-weight: 800;
+  border: 1px solid rgba(244, 247, 241, 0.16);
+}
+
+.primary {
+  color: #031006;
+  background: #6dff88;
+}
+
+.secondary {
+  color: #dfffe5;
+  background: rgba(109, 255, 136, 0.10);
+  border-color: rgba(109, 255, 136, 0.42);
+}
+
+.ghost {
+  color: rgba(244, 247, 241, 0.78);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.loader {
+  width: 34px;
+  height: 34px;
+  margin: 12px auto;
+  border-radius: 17px;
+  border: 2px solid rgba(109, 255, 136, 0.25);
+  background: radial-gradient(circle, rgba(109, 255, 136, 0.8), transparent 34%);
+}
+
+.verdict {
+  padding: 6px 8px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(244, 247, 241, 0.10);
+}
+
+.target-list {
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.target-card {
+  width: 88px;
+  min-height: 58px;
+  padding: 6px;
+  border-radius: 9px;
   text-align: left;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(244, 247, 241, 0.13);
 }
 
-.object-button-name {
-  display: block;
-  color: #f7ffe9;
-  font-size: 12px;
-  line-height: 16px;
-  font-weight: 700;
+.target-card.planet {
+  border-color: rgba(255, 214, 111, 0.55);
 }
 
-.object-button-meta {
+.target-card.star {
+  border-color: rgba(160, 225, 255, 0.48);
+}
+
+.target-card.moon {
+  border-color: rgba(244, 247, 241, 0.62);
+}
+
+.target-name {
   display: block;
-  color: rgba(244, 247, 241, 0.58);
+  color: #ffffff;
+  font-size: 14px;
+  line-height: 17px;
+  font-weight: 900;
+}
+
+.target-meta,
+.target-tip {
+  display: block;
+  margin-top: 4px;
+  color: rgba(244, 247, 241, 0.65);
   font-size: 10px;
   line-height: 14px;
 }
 
-.tone-moon {
-  color: #fff1b8;
-  border-color: rgba(246, 214, 123, 0.34);
-  background: rgba(246, 214, 123, 0.12);
-}
-
-.tone-planet {
-  color: #c6f6ff;
-  border-color: rgba(158, 230, 255, 0.34);
-  background: rgba(158, 230, 255, 0.1);
-}
-
-.tone-star {
-  color: #eef8ff;
-  border-color: rgba(238, 248, 255, 0.3);
-  background: rgba(238, 248, 255, 0.08);
-}
-
-.tone-constellation {
-  color: #b7f7bf;
-  border-color: rgba(183, 247, 191, 0.34);
-  background: rgba(183, 247, 191, 0.1);
-}
-
-.tone-meteor,
-.tone-deepsky {
-  color: #ffd1a3;
-  border-color: rgba(255, 209, 163, 0.34);
-  background: rgba(255, 209, 163, 0.1);
-}
-
-.detail-hero {
-  display: flex;
-  flex-direction: row;
-  justify-content: space-between;
-  height: 82px;
-  box-sizing: border-box;
-  padding: 11px 12px;
-  margin-bottom: 9px;
-  border-radius: 8px;
-}
-
-.detail-main {
-  display: flex;
-  flex-direction: column;
-}
-
-.detail-type {
-  color: rgba(244, 247, 241, 0.66);
-  font-size: 11px;
-  line-height: 14px;
-}
-
-.detail-name {
-  color: #f7ffe9;
-  font-size: 22px;
-  line-height: 28px;
-  font-weight: 800;
-}
-
-.detail-en {
-  color: rgba(244, 247, 241, 0.58);
-  font-size: 11px;
-  line-height: 14px;
-}
-
-.detail-orbit {
-  position: relative;
-  width: 68px;
-  height: 58px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 50%;
-}
-
-.detail-dot {
-  position: absolute;
-  right: 10px;
-  top: 14px;
-  font-size: 18px;
-}
-
-.detail-info {
-  margin-bottom: 9px;
-}
-
-.detail-intro {
-  display: block;
-  color: rgba(244, 247, 241, 0.86);
-  font-size: 12px;
-  line-height: 17px;
-  margin-bottom: 8px;
+.target-tip {
+  color: #aaf7b8;
 }
 
 .metric-row {
   display: flex;
   flex-direction: row;
   gap: 8px;
-  margin-bottom: 8px;
+  margin: 10px 0;
 }
 
 .metric {
   flex: 1;
-  height: 46px;
-  box-sizing: border-box;
-  padding: 6px 7px;
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
 }
 
-.metric-label {
+.metric-label,
+.metric-value {
   display: block;
-  color: rgba(244, 247, 241, 0.5);
   font-size: 10px;
   line-height: 13px;
 }
 
+.metric-label {
+  color: rgba(244, 247, 241, 0.52);
+}
+
 .metric-value {
-  display: block;
-  color: #f7ffe9;
-  font-size: 12px;
-  line-height: 17px;
-  font-weight: 700;
-}
-
-.detail-summary {
-  display: block;
-  color: rgba(244, 247, 241, 0.7);
-  font-size: 11px;
-  line-height: 16px;
-}
-
-.locate-compass {
-  position: relative;
-  height: 86px;
-  margin-bottom: 9px;
-  border-radius: 8px;
-  background: linear-gradient(180deg, rgba(183, 247, 191, 0.1), rgba(255, 255, 255, 0.035));
-  border: 1px solid rgba(183, 247, 191, 0.18);
-  overflow: hidden;
-}
-
-.compass-target {
-  position: absolute;
-  left: 14px;
-  top: 12px;
-  color: #f7ffe9;
-  font-size: 16px;
-  line-height: 20px;
+  margin-top: 3px;
+  color: #ffffff;
   font-weight: 800;
 }
 
-.compass-direction {
-  position: absolute;
-  left: 14px;
-  top: 38px;
-  color: #b7f7bf;
-  font-size: 12px;
-  line-height: 16px;
+.compass {
+  position: relative;
+  height: 58px;
+  margin-top: 10px;
+  border-radius: 14px;
+  background: radial-gradient(circle, rgba(109, 255, 136, 0.16), transparent 58%);
+  border: 1px solid rgba(109, 255, 136, 0.20);
 }
 
-.compass-arc {
-  position: absolute;
-  right: 30px;
-  top: 12px;
-  width: 72px;
-  height: 72px;
-  border-radius: 50%;
-  border: 1px solid rgba(246, 214, 123, 0.32);
-}
-
-.locate-steps {
-  margin-bottom: 9px;
-}
-
-.locate-title {
+.compass-label {
   display: block;
-  color: #f7ffe9;
-  font-size: 13px;
-  line-height: 18px;
-  font-weight: 700;
-  margin-bottom: 4px;
-}
-
-.step-line {
-  display: block;
-  color: rgba(244, 247, 241, 0.76);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.wide-action,
-.action {
-  height: 40px;
-  border-radius: 7px;
-  font-size: 13px;
-  font-weight: 700;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-}
-
-.wide-action {
-  width: 100%;
-}
-
-.action-row {
-  display: flex;
-  flex-direction: row;
-  gap: 8px;
-}
-
-.action {
-  flex: 1;
-}
-
-.primary-action {
-  color: #07100d;
-  background: #b7f7bf;
-  border-color: rgba(183, 247, 191, 0.78);
-}
-
-.secondary-action {
-  color: #f4f7f1;
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.footer {
-  margin-top: 9px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(244, 247, 241, 0.08);
-}
-
-.assistant-line {
-  display: block;
-  color: #f6d67b;
-  font-size: 11px;
-  line-height: 15px;
   text-align: center;
+  line-height: 58px;
+  color: #dfffe5;
+  font-size: 18px;
+  font-weight: 900;
 }
 
-.footer-tip {
+.status {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(244, 247, 241, 0.10);
+}
+
+.status-line,
+.status-chip,
+.debug {
   display: block;
-  color: rgba(244, 247, 241, 0.48);
+  color: rgba(244, 247, 241, 0.72);
   font-size: 10px;
   line-height: 14px;
-  text-align: center;
+}
+
+.status-chip {
+  color: #aaf7b8;
+}
+
+.debug {
+  color: rgba(160, 225, 255, 0.72);
 }
 </style>

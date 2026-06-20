@@ -1,10 +1,25 @@
 {
+  "name": "skymate-aiui-agent",
+  "displayName": "SkyMate",
+  "version": "0.1.0",
+  "description": "SkyMate smart-glasses astronomy assistant",
   "pages": [
     "pages/index/index"
   ],
+  "entryPagePath": "pages/index/index",
+  "type": "aiui",
+  "viewport": {
+    "width": 448,
+    "height": 320
+  },
   "window": {
+    "navigationStyle": "custom",
+    "backgroundColor": "#050706",
     "navigationBarTitleText": "SkyMate",
-    "navigationBarBackgroundColor": "#070B18",
+    "navigationBarBackgroundColor": "#050706",
     "navigationBarTextStyle": "white"
-  }
+  },
+  "permissions": [
+    "network"
+  ]
 }
