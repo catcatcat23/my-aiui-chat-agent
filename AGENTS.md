@@ -32,9 +32,10 @@
 ## Page Trigger Rules
 
 1. 用户问天文、观星、今晚能看到什么、能不能看到月亮/行星/星座/流星雨时，必须触发 AIUI 页面 `pages/index/index`。
-2. 不要把外部工具名或搜索工具名当成 Ink 页面渲染。禁止渲染 `bocha_websearch`、`maps_weather`、`sky_chart`、`L81vRi` 这类工具名页面。
-3. 聊天侧触发页面时，优先把用户原话传给页面，让页面自己请求 `https://sky.eunoia.top/sky/chart`。
-4. 推荐传参：
+2. 不要把外部工具名或搜索工具名当成 Ink 页面渲染。禁止渲染 `bocha_websearch`、`maps_weather`、`maps_geo`、`sky_chart`、`L81vRi` 这类工具名页面。
+3. 用户说“查看某地位置”“我在厦门/上海/苏州”“今晚某地能看到什么”时，不要触发地图类页面；仍然渲染 `pages/index/index`，把城市、经纬度或用户原话传给页面。
+4. 聊天侧触发页面时，优先把用户原话传给页面，让页面自己请求 `https://sky.eunoia.top/sky/chart`。
+5. 推荐传参：
 
 ```json
 {
@@ -47,9 +48,10 @@
 }
 ```
 
-5. 如果聊天侧已经拿到星图数据，可以直接传 `mode=overview`、`targets`、`skyChart`、`verdict`、`condition`、`locationName`、`dataTime`。其中 `targets` 和 `skyChart` 优先使用 JSON 字符串，避免嵌套对象兼容问题。
-6. 用户追问某个星体时，可以再次渲染同一页并传 `mode=detail` 与 `selectedObject`，视觉上等同于 AI 自动点击该星体。
-7. 页面内 Craft 按钮、ASR 按钮和目标卡片由 `pages/index/index.ink` 自己通过 `bindtap` 调用页面事件，不依赖平台插件。
+6. 如果已经拿到明确经纬度，推荐直接传 `latitude`/`longitude` 或 `lat`/`lon`，页面会优先使用经纬度，不再走默认城市。
+7. 如果聊天侧已经拿到星图数据，可以直接传 `mode=overview`、`targets`、`skyChart`、`verdict`、`condition`、`locationName`、`dataTime`。其中 `targets` 和 `skyChart` 优先使用 JSON 字符串，避免嵌套对象兼容问题。
+8. 用户追问某个星体时，可以再次渲染同一页并传 `mode=detail` 与 `selectedObject`，视觉上等同于 AI 自动点击该星体。
+9. 页面内 Craft 按钮、ASR 按钮和目标卡片由 `pages/index/index.ink` 自己通过 `bindtap` 调用页面事件，不依赖平台插件。
 
 ## Location Rules
 
@@ -62,7 +64,7 @@
 ## Time Rules
 
 1. 如果运行环境提供 `get_current_time`，回答前调用它获取当前时间。
-2. 页面直接请求星图接口时，会使用页面运行时的当前时间生成 `time_utc`。
+2. 页面直接请求星图接口时，不主动传 `time_utc`，让星图后端使用当前时间，避免运行时日期格式兼容问题。
 3. 不要让用户自己解释复杂 UTC 时间格式。
 
 ## Data And Network Rules

@@ -7,7 +7,7 @@
     "pages/index/index"
   ],
   "viewport": {
-    "width": 448,
+    "width": 480,
     "height": 320
   },
   "permissions": [

@@ -9,7 +9,7 @@
   "entryPagePath": "pages/index/index",
   "type": "aiui",
   "viewport": {
-    "width": 448,
+    "width": 480,
     "height": 320
   },
   "window": {
