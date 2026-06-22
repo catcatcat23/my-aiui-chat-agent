@@ -20,6 +20,8 @@
     "navigationBarTextStyle": "white"
   },
   "permissions": [
-    "network"
+    "network",
+    "microphone",
+    "audio"
   ]
 }

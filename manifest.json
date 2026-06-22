@@ -11,7 +11,9 @@
     "height": 320
   },
   "permissions": [
-    "network"
+    "network",
+    "microphone",
+    "audio"
   ],
   "description": "SkyMate smart-glasses astronomy assistant"
 }
