@@ -13,6 +13,8 @@
         },
         "userText": { "type": "string", "description": "Question from the agent chat" },
         "locationName": { "type": "string", "description": "Location label" },
+        "topMetaLine": { "type": "string", "description": "Short update time shown under the app title" },
+        "observationMetaLine": { "type": "string", "description": "Short location and update time shown in compact UI metadata" },
         "latitude": { "type": "number", "description": "Observer latitude" },
         "longitude": { "type": "number", "description": "Observer longitude" },
         "targets": { "type": "string", "description": "Recommended targets JSON string" },
@@ -37,6 +39,7 @@ const SKY_REQUEST_TARGET_LIMIT = 30
 const HUD_BG_SLOT_COUNT = 8
 const SKY_OBJECT_LIMIT = 32
 const SKY_MAP_SIZE = 184
+const DISPLAY_TIMEZONE_OFFSET_MINUTES = 8 * 60
 
 const SKY_OPTIONS = {
   star_max_mag: 3.0,
@@ -138,6 +141,82 @@ function shortText(value, maxLength) {
   const valueText = text(value, '')
   const limit = maxLength || 42
   return valueText.length > limit ? `${valueText.slice(0, limit)}...` : valueText
+}
+
+function padTimePart(value) {
+  return String(value).padStart(2, '0')
+}
+
+function formatClockLabel(value) {
+  const timestamp = parseTimeValue(value)
+  const safeTimestamp = isNaN(timestamp) ? Date.now() : timestamp
+  const displayDate = new Date(safeTimestamp + DISPLAY_TIMEZONE_OFFSET_MINUTES * 60000)
+  return `${padTimePart(displayDate.getUTCHours())}:${padTimePart(displayDate.getUTCMinutes())}`
+}
+
+function shortLocationLabel(value) {
+  const valueText = text(value, '当前位置').replace(/\s+/g, '')
+  return valueText.length > 5 ? `${valueText.slice(0, 5)}...` : valueText
+}
+
+function readChartTimeValue(chart) {
+  const raw = chart || {}
+  const sources = [
+    raw,
+    raw.sky_chart,
+    raw.skyChart,
+    raw.chart,
+    raw.data,
+    raw.result,
+    raw.data && raw.data.sky_chart,
+    raw.data && raw.data.skyChart,
+    raw.result && raw.result.sky_chart,
+    raw.result && raw.result.skyChart,
+    raw.chart && raw.chart.sky_chart,
+    raw.chart && raw.chart.skyChart
+  ]
+  for (let index = 0; index < sources.length; index += 1) {
+    const value = readAny(sources[index], ['time_utc', 'timeUtc', 'generated_at', 'generatedAt', 'dataTime', 'timestamp', 'observation_time'])
+    if (hasValue(value)) return value
+  }
+  return undefined
+}
+
+function parseTimeValue(value) {
+  if (value instanceof Date) return value.getTime()
+  if (typeof value === 'number') return value
+  const raw = text(value, '')
+  if (!raw) return NaN
+  if (/^\d+$/.test(raw)) return parseInt(raw, 10)
+  const matched = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z)?$/)
+  if (matched) {
+    return Date.UTC(
+      parseInt(matched[1], 10),
+      parseInt(matched[2], 10) - 1,
+      parseInt(matched[3], 10),
+      parseInt(matched[4], 10),
+      parseInt(matched[5], 10),
+      parseInt(matched[6] || '0', 10)
+    )
+  }
+  return new Date(raw).getTime()
+}
+
+function safeGeneratedAt(value) {
+  const timestamp = parseTimeValue(value)
+  return isNaN(timestamp) ? Date.now() : timestamp
+}
+
+function createTopMetaLine(timeValue, label) {
+  const clock = formatClockLabel(timeValue || Date.now())
+  const updateLabel = label || '更新于'
+  return clock ? `${updateLabel} ${clock}` : updateLabel
+}
+
+function createObservationMetaLine(locationName, timeValue, label) {
+  const clock = formatClockLabel(timeValue || Date.now())
+  const updateLabel = label || '更新于'
+  return `基于${shortLocationLabel(locationName)} · ${updateLabel} ${clock}`
 }
 
 function numeric(value, fallback) {
@@ -1050,6 +1129,8 @@ export default {
     buildVersion: BUILD_VERSION,
     pageTag: '待唤醒',
     locationName: '等待位置',
+    topMetaLine: '等待更新',
+    observationMetaLine: '基于当前位置 · 等待更新',
     verdict: 'SkyMate 帮你看今晚星空。',
     condition: '使用当前位置后，我会给出今晚的观星建议。',
     assistantLine: '点击使用当前位置，开始判断今晚能看到什么。',
@@ -1101,22 +1182,30 @@ export default {
       if (selected) {
         const visibleObjects = normalizedTargets.length ? normalizedTargets : [selected]
         const skyObjects = createSkyChartObjects(visibleObjects, selected.key)
+        const locationName = text(query.locationName || query.city || query.location, this.data.locationName)
+        const generatedAt = safeGeneratedAt(readChartTimeValue(chart))
+        const topMetaLine = createTopMetaLine(generatedAt)
+        const observationMetaLine = createObservationMetaLine(locationName, generatedAt)
         const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
           source: chart ? 'api' : 'page-query',
           reliable: !!chart,
-          generatedAt: Date.now(),
+          generatedAt,
           location: queryPlace || { name: text(query.locationName || query.city || query.location, '当前位置') },
           objects: visibleObjects,
           selectedObject: selected
         }, Object.assign({}, this.data, {
           mode: 'detail',
-          locationName: text(query.locationName || query.city || query.location, this.data.locationName),
+          locationName,
+          topMetaLine,
+          observationMetaLine,
           visibleObjects,
           selectedObject: selected
         }))
         this.setData(Object.assign({
           currentPlace: queryPlace || this.data.currentPlace,
-          locationName: text(query.locationName || query.city || query.location, this.data.locationName),
+          locationName,
+          topMetaLine,
+          observationMetaLine,
           visibleObjects,
           selectedKey: selected.key,
           selectedIndex: Math.max(0, visibleObjects.findIndex(item => item.key === selected.key)),
@@ -1879,6 +1968,8 @@ export default {
     this.reportEvent('locateOnly')
     this.setData({
       locationName: '正在定位',
+      topMetaLine: '正在定位',
+      observationMetaLine: '基于当前位置 · 正在定位',
       requestStatus: 'location',
       diagnosticLine: 'try location',
       assistantLine: '正在读取 GPS 位置。',
@@ -1892,6 +1983,8 @@ export default {
       this.setData({
         currentPlace: place,
         locationName: place.name || '当前位置',
+        topMetaLine: createTopMetaLine(Date.now()),
+        observationMetaLine: createObservationMetaLine(place.name || '当前位置', Date.now()),
         requestStatus: 'location ok',
         diagnosticLine: `lat=${latText} lon=${lonText}`,
         assistantLine: '已拿到当前位置，可以开始语音提问。',
@@ -1912,6 +2005,8 @@ export default {
     this.applyMode('loading')
     this.setData({
       locationName: '正在定位',
+      topMetaLine: '正在定位',
+      observationMetaLine: '基于当前位置 · 正在定位',
       requestStatus: 'location',
       diagnosticLine: 'try location',
       assistantLine: '我先尝试读取设备当前位置。'
@@ -2005,6 +2100,8 @@ export default {
     this.setData({
       currentPlace: place,
       locationName: place.name,
+      topMetaLine: createTopMetaLine(Date.now()),
+      observationMetaLine: createObservationMetaLine(place.name, Date.now()),
       requestStatus: 'loading',
       diagnosticLine: `lat=${place.lat} lon=${place.lon}`,
       assistantLine: `正在查 ${place.name} 今晚的星空。`
@@ -2110,13 +2207,15 @@ export default {
     const first = targets[0] || FALLBACK_TARGETS[0]
     const source = text(options && options.source, 'sky-chart')
     const place = (options && options.place) || this.data.currentPlace || { name: locationName }
-    const targetNames = targets.slice(0, 2).map(item => item.name).join('、')
-    const verdict = targets.length
-      ? `${locationName}今晚优先看 ${targetNames}`
-      : `${locationName}今晚先看亮星和亮行星`
+    const generatedAt = safeGeneratedAt(readChartTimeValue(chart))
+    const topMetaLine = createTopMetaLine(generatedAt)
+    const observationMetaLine = createObservationMetaLine(locationName, generatedAt)
+    const verdict = '推荐观测列表'
     const condition = '城市里优先看亮星、行星和月亮；深空目标更适合望远镜或暗处。'
     const pageData = Object.assign({}, this.data, {
       locationName,
+      topMetaLine,
+      observationMetaLine,
       verdict,
       condition,
       visibleObjects: targets,
@@ -2125,7 +2224,7 @@ export default {
     const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
       source: 'api',
       reliable: true,
-      generatedAt: Date.now(),
+      generatedAt,
       location: place,
       query: options && options.query,
       objects: targets,
@@ -2143,6 +2242,8 @@ export default {
       locationName,
       skyObjects: createSkyChartObjects(skyObjects, first.key),
       skyKnowledgeBase: knowledge,
+      topMetaLine,
+      observationMetaLine,
       verdict,
       condition,
       assistantLine: '已筛出最适合普通用户看的目标。',
@@ -2150,6 +2251,8 @@ export default {
       diagnosticLine: `targets=${targets.length} sky=${skyObjects.length}`
     }, createHudSlots(targets, first.key), createSelectedSkyOverlay(first, 0), createDetailState(first, {
       locationName,
+      topMetaLine,
+      observationMetaLine,
       verdict,
       condition
     })))
@@ -2158,11 +2261,16 @@ export default {
 
   showFallback(locationName, reason) {
     console.log('[SkyMate] fallback reason', reason || '')
-    const verdict = `暂时查不到 ${locationName} 的实时星图`
+    const generatedAt = Date.now()
+    const topMetaLine = createTopMetaLine(generatedAt)
+    const observationMetaLine = createObservationMetaLine(locationName, generatedAt)
+    const verdict = '推荐观测列表'
     const condition = '下面是一般情况下较容易尝试的亮目标，不代表当前位置和当前时间的精确结果。'
     const fallbackPlace = this.data.currentPlace || { name: locationName }
     const pageData = Object.assign({}, this.data, {
       locationName,
+      topMetaLine,
+      observationMetaLine,
       verdict,
       condition,
       visibleObjects: FALLBACK_TARGETS,
@@ -2171,7 +2279,7 @@ export default {
     const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
       source: 'fallback',
       reliable: false,
-      generatedAt: Date.now(),
+      generatedAt,
       location: fallbackPlace,
       query: null,
       objects: FALLBACK_TARGETS,
@@ -2185,6 +2293,8 @@ export default {
       skyObjects: createSkyChartObjects(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key),
       skyKnowledgeBase: knowledge,
       locationName,
+      topMetaLine,
+      observationMetaLine,
       verdict,
       condition,
       assistantLine: '实时星图暂时不可用，下面只是非实时兜底建议。',
@@ -2192,6 +2302,8 @@ export default {
       diagnosticLine: shortText(reason || 'fetch failed', 62)
     }, createHudSlots(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key), createSelectedSkyOverlay(FALLBACK_TARGETS[0], 0), createDetailState(FALLBACK_TARGETS[0], {
       locationName,
+      topMetaLine,
+      observationMetaLine,
       verdict,
       condition
     })))
@@ -2315,7 +2427,6 @@ export default {
     <view class="top-row">
       <view>
         <text class="brand">SkyMate</text>
-        <text class="meta">{{ locationName }}</text>
       </view>
       <view class="status-pill">
         <text class="status-pill-text">{{ pageTag }}</text>
@@ -2397,7 +2508,7 @@ export default {
 
     <view class="content overview-panel" style="display: {{ overviewDisplay }};">
       <text class="headline">{{ verdict }}</text>
-      <text class="body">{{ condition }}</text>
+      <text class="body">{{ observationMetaLine }}</text>
       <view class="target-row">
         <button class="target-btn {{ target0Class }}" data-key="{{ target0Key }}" catchtap="selectObject">
           <text class="target-name">{{ target0Name }}</text>
@@ -2430,7 +2541,7 @@ export default {
         <view class="detail-left">
           <text class="kicker">{{ selectedObject.type }}</text>
           <text class="headline">{{ selectedObject.name }}</text>
-          <text class="body detail-meta">{{ selectedObject.direction }} · 高度 {{ selectedObject.altitude }} · 亮度 {{ selectedObject.magnitude }}</text>
+          <text class="body detail-meta">{{ observationMetaLine }}</text>
           <view class="detail-block">
             <text class="detail-label">简介</text>
             <text class="detail-text detail-intro-text">{{ detailIntro }}</text>
@@ -5532,6 +5643,10 @@ export default {
 
 .detail-left .detail-block {
   margin-top: 6px;
+}
+
+.detail-left .intro-block {
+  margin-top: 28px;
 }
 
 .detail-left .detail-label {
