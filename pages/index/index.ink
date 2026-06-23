@@ -1265,6 +1265,11 @@ export default {
 
   onVoiceWakeup(event) {
     console.log('[SkyMate] voice wakeup', event || {})
+    const keyword = text(event && event.keyword, 'leqi')
+    if (keyword && keyword !== 'leqi') {
+      this.reportEvent(`voiceWakeupIgnored:${keyword}`)
+      return
+    }
     this.reportEvent('voiceWakeup')
     this.startUnifiedAsr()
   },
@@ -1287,6 +1292,9 @@ export default {
     }
 
     if (isUp || isDown) {
+      const mode = this.data.mode
+      const canMoveSelection = mode === 'overview' || mode === 'detail' || mode === 'locate'
+      if (!canMoveSelection) return
       if (event && event.preventDefault) event.preventDefault()
       this.moveSelection(isUp ? -1 : 1)
       return
@@ -2423,7 +2431,7 @@ export default {
 </script>
 
 <page>
-  <view class="shell card {{ mode }}" tabindex="0" focusable="true" bindkeyup="onKeyUp">
+  <view class="shell card {{ mode }}" tabindex="0" focusable="true">
     <view class="top-row">
       <view>
         <text class="brand">SkyMate</text>
