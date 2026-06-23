@@ -13,6 +13,8 @@
         },
         "userText": { "type": "string", "description": "Question from the agent chat" },
         "locationName": { "type": "string", "description": "Location label" },
+        "topMetaLine": { "type": "string", "description": "Short update time shown under the app title" },
+        "observationMetaLine": { "type": "string", "description": "Short location and update time shown in compact UI metadata" },
         "latitude": { "type": "number", "description": "Observer latitude" },
         "longitude": { "type": "number", "description": "Observer longitude" },
         "targets": { "type": "string", "description": "Recommended targets JSON string" },
@@ -33,15 +35,17 @@ const BUILD_VERSION = 'v9-aiui-card'
 const SKY_CHART_ENDPOINT = 'https://sky.eunoia.top/sky/chart'
 const GEOCODING_ENDPOINT = 'https://geocoding-api.open-meteo.com/v1/search'
 const HUD_TARGET_SLOT_COUNT = 5
+const SKY_REQUEST_TARGET_LIMIT = 30
 const HUD_BG_SLOT_COUNT = 8
 const SKY_OBJECT_LIMIT = 32
 const SKY_MAP_SIZE = 184
+const DISPLAY_TIMEZONE_OFFSET_MINUTES = 8 * 60
 
 const SKY_OPTIONS = {
   star_max_mag: 3.0,
   deep_sky_max_mag: 9.0,
   min_altitude_deg: 15.0,
-  total_limit: 28,
+  total_limit: SKY_REQUEST_TARGET_LIMIT,
   include_planets: true,
   include_deep_sky: true
 }
@@ -137,6 +141,82 @@ function shortText(value, maxLength) {
   const valueText = text(value, '')
   const limit = maxLength || 42
   return valueText.length > limit ? `${valueText.slice(0, limit)}...` : valueText
+}
+
+function padTimePart(value) {
+  return String(value).padStart(2, '0')
+}
+
+function formatClockLabel(value) {
+  const timestamp = parseTimeValue(value)
+  const safeTimestamp = isNaN(timestamp) ? Date.now() : timestamp
+  const displayDate = new Date(safeTimestamp + DISPLAY_TIMEZONE_OFFSET_MINUTES * 60000)
+  return `${padTimePart(displayDate.getUTCHours())}:${padTimePart(displayDate.getUTCMinutes())}`
+}
+
+function shortLocationLabel(value) {
+  const valueText = text(value, '当前位置').replace(/\s+/g, '')
+  return valueText.length > 5 ? `${valueText.slice(0, 5)}...` : valueText
+}
+
+function readChartTimeValue(chart) {
+  const raw = chart || {}
+  const sources = [
+    raw,
+    raw.sky_chart,
+    raw.skyChart,
+    raw.chart,
+    raw.data,
+    raw.result,
+    raw.data && raw.data.sky_chart,
+    raw.data && raw.data.skyChart,
+    raw.result && raw.result.sky_chart,
+    raw.result && raw.result.skyChart,
+    raw.chart && raw.chart.sky_chart,
+    raw.chart && raw.chart.skyChart
+  ]
+  for (let index = 0; index < sources.length; index += 1) {
+    const value = readAny(sources[index], ['time_utc', 'timeUtc', 'generated_at', 'generatedAt', 'dataTime', 'timestamp', 'observation_time'])
+    if (hasValue(value)) return value
+  }
+  return undefined
+}
+
+function parseTimeValue(value) {
+  if (value instanceof Date) return value.getTime()
+  if (typeof value === 'number') return value
+  const raw = text(value, '')
+  if (!raw) return NaN
+  if (/^\d+$/.test(raw)) return parseInt(raw, 10)
+  const matched = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z)?$/)
+  if (matched) {
+    return Date.UTC(
+      parseInt(matched[1], 10),
+      parseInt(matched[2], 10) - 1,
+      parseInt(matched[3], 10),
+      parseInt(matched[4], 10),
+      parseInt(matched[5], 10),
+      parseInt(matched[6] || '0', 10)
+    )
+  }
+  return new Date(raw).getTime()
+}
+
+function safeGeneratedAt(value) {
+  const timestamp = parseTimeValue(value)
+  return isNaN(timestamp) ? Date.now() : timestamp
+}
+
+function createTopMetaLine(timeValue, label) {
+  const clock = formatClockLabel(timeValue || Date.now())
+  const updateLabel = label || '更新于'
+  return clock ? `${updateLabel} ${clock}` : updateLabel
+}
+
+function createObservationMetaLine(locationName, timeValue, label) {
+  const clock = formatClockLabel(timeValue || Date.now())
+  const updateLabel = label || '更新于'
+  return `基于${shortLocationLabel(locationName)} · ${updateLabel} ${clock}`
 }
 
 function numeric(value, fallback) {
@@ -286,7 +366,7 @@ function pickTargets(rawChart) {
     })
     .sort((left, right) => visibilityScore(left) - visibilityScore(right))
 
-  return (targets.length ? targets : FALLBACK_TARGETS).slice(0, HUD_TARGET_SLOT_COUNT)
+  return targets.length ? targets : FALLBACK_TARGETS
 }
 
 function collectSkyObjects(rawChart, fallbackTargets) {
@@ -382,10 +462,14 @@ function bgPoint(index) {
 }
 
 function createHudSlots(targets, selectedKey) {
-  const safeTargets = (targets && targets.length ? targets : FALLBACK_TARGETS).slice(0, HUD_TARGET_SLOT_COUNT)
-  const selected = safeTargets.find(item => item.key === selectedKey) || safeTargets[0] || FALLBACK_TARGETS[0]
+  const allTargets = targets && targets.length ? targets : FALLBACK_TARGETS
+  const selectedIndex = Math.max(0, allTargets.findIndex(item => item.key === selectedKey))
+  const maxStart = Math.max(0, allTargets.length - HUD_TARGET_SLOT_COUNT)
+  const windowStart = clamp(selectedIndex - HUD_TARGET_SLOT_COUNT + 1, 0, maxStart)
+  const safeTargets = allTargets.slice(windowStart, windowStart + HUD_TARGET_SLOT_COUNT)
+  const selected = allTargets[selectedIndex] || safeTargets[0] || FALLBACK_TARGETS[0]
   const slots = {
-    objectCount: String(safeTargets.length),
+    objectCount: String(allTargets.length),
     focusStyle: hiddenStyle(),
     aimLine: selected ? `${selected.direction} / ${selected.altitude}` : 'AIM --'
   }
@@ -411,7 +495,7 @@ function createHudSlots(targets, selectedKey) {
     slots[`target${index}Style`] = dotStyle(point, selectedClass ? 12 : 9)
     slots[`label${index}Style`] = labelStyle(point)
     slots[`target${index}Name`] = target.name
-    slots[`target${index}Meta`] = `${target.type} · ${target.direction}`
+    slots[`target${index}Meta`] = `${windowStart + index + 1}/${allTargets.length} · ${target.type} · ${target.direction}`
     slots[`target${index}Key`] = target.key
     slots[`target${index}Class`] = `${target.typeClass} ${selectedClass}`
   }
@@ -651,18 +735,18 @@ function detailGuideAnswer(target, question) {
   const questionText = text(question, '')
 
   if (questionText.indexOf('高度') >= 0 || questionText.indexOf('多高') >= 0) {
-    return `方向：${name}在${direction}，高度${altitude}。\n找法：先把视野抬到这个高度附近，再找稳定亮点。\n知识：颜色多呈${facts.color}，${facts.size}。`
+    return `${name}现在在${direction}方向，高度大约是${altitude}。先把视野抬到这个高度附近，再找稳定、较亮的光点。它的颜色多呈${facts.color}，${facts.size}。`
   }
 
   if (questionText.indexOf('方向') >= 0 || questionText.indexOf('哪里') >= 0 || questionText.indexOf('哪边') >= 0) {
-    return `方向：${name}在${direction}方向。\n找法：找开阔视野，先按方向扫一遍，再用亮度和稳定性确认。\n知识：${facts.knowledge}`
+    return `${name}在${direction}方向。找一片开阔视野，先按这个方向扫一遍，再用亮度和稳定性确认。补充一点：${facts.knowledge}`
   }
 
   if (questionText.indexOf('介绍') >= 0 || questionText.indexOf('什么') >= 0) {
-    return `方向：${name}现在在${direction}，高度${altitude}。\n找法：城市里先用肉眼找最亮、最稳定的光点。\n知识：颜色${facts.color}，${facts.size}；${facts.knowledge}`
+    return `${name}是今晚可以优先关注的${text(object.type, '天体')}，现在大致在${direction}，高度${altitude}。城市里先用肉眼找较亮、较稳定的光点。它的颜色多为${facts.color}，${facts.knowledge}`
   }
 
-  return `方向：${name}在${direction}，高度${altitude}。\n找法：${locate}\n知识：颜色${facts.color}，${facts.size}。`
+  return `${name}在${direction}方向，高度${altitude}。${locate} 颜色多为${facts.color}，${facts.size}。`
 }
 
 function createDetailIntro(target) {
@@ -753,6 +837,105 @@ function createLocationResolvePrompt(input) {
   ].join('\n')
 }
 
+function createObjectIndex(objects) {
+  const index = {}
+  ;(Array.isArray(objects) ? objects : []).forEach(item => {
+    if (!item) return
+    const key = keyOf(item.key || item.name)
+    if (key) index[key] = item
+    const nameKey = keyOf(item.name)
+    if (nameKey) index[nameKey] = item
+  })
+  return index
+}
+
+function createSkyKnowledgeBase(base) {
+  const source = text(base && base.source, 'unknown')
+  const objects = Array.isArray(base && base.objects) ? base.objects : []
+  const next = {
+    source,
+    reliable: !!(base && base.reliable),
+    generatedAt: (base && base.generatedAt) || null,
+    location: (base && base.location) || null,
+    query: (base && base.query) || null,
+    objects,
+    selectedObject: (base && base.selectedObject) || null,
+    promptText: text(base && base.promptText, ''),
+    objectIndex: (base && base.objectIndex) || createObjectIndex(objects)
+  }
+  return next
+}
+
+function createSkyKnowledgePromptText(kb, pageData) {
+  const data = pageData || {}
+  const base = kb || data.skyKnowledgeBase || {}
+  const objects = Array.isArray(base.objects) ? base.objects.slice(0, 8) : []
+  const lines = objects.map((item, index) => {
+    return [
+      `${index + 1}. ${text(item.name, '未知目标')}`,
+      `类型：${text(item.type || item.category, '未知')}`,
+      `方向：${text(item.direction, '未知')}`,
+      `高度：${text(item.altitudeText || item.altitude || item.alt, '未知')}`,
+      `亮度：${text(item.magText || item.magnitude || item.mag, '未知')}`,
+      `建议：${text(item.tip || item.locate || item.description, '暂无')}`
+    ].join('；')
+  }).join('\n')
+
+  return [
+    `位置：${base.location ? text(base.location.name, '当前位置') : text(data.locationName, '未知')}`,
+    `数据来源：${text(base.source, 'unknown')}`,
+    `是否实时可靠：${base.reliable ? '是' : '否'}`,
+    `生成时间：${base.generatedAt || '未知'}`,
+    `观测结论：${text(data.verdict, '暂无')}`,
+    `观测条件：${text(data.condition, '暂无')}`,
+    '',
+    '当前可参考目标：',
+    lines || '暂无'
+  ].join('\n')
+}
+
+function updateSkyKnowledgeBase(previous, partial, pageData) {
+  const base = createSkyKnowledgeBase(Object.assign({}, previous || {}, partial || {}))
+  base.objectIndex = createObjectIndex(base.objects)
+  base.promptText = createSkyKnowledgePromptText(base, pageData)
+  return base
+}
+
+function retrieveSkyKnowledge(question, pageData) {
+  const data = pageData || {}
+  const kb = data.skyKnowledgeBase
+  if (!kb || !Array.isArray(kb.objects) || !kb.objects.length) return ''
+
+  const q = text(question, '')
+  if (data.mode === 'detail' && data.selectedObject) {
+    return [
+      '当前选中目标：',
+      createDetailObjectContext(data.selectedObject, data),
+      '',
+      '当前星图知识库：',
+      kb.promptText || createSkyKnowledgePromptText(kb, data)
+    ].join('\n')
+  }
+
+  if (
+    q.indexOf('哪个') >= 0 ||
+    q.indexOf('哪一个') >= 0 ||
+    q.indexOf('最亮') >= 0 ||
+    q.indexOf('更亮') >= 0 ||
+    q.indexOf('容易') >= 0 ||
+    q.indexOf('换一个') >= 0 ||
+    q.indexOf('在哪') >= 0 ||
+    q.indexOf('哪里') >= 0 ||
+    q.indexOf('方向') >= 0 ||
+    q.indexOf('看得到') >= 0 ||
+    q.indexOf('能看到') >= 0
+  ) {
+    return kb.promptText || createSkyKnowledgePromptText(kb, data)
+  }
+
+  return ''
+}
+
 function createDetailObjectContext(target, pageData) {
   const object = target || FALLBACK_TARGETS[0]
   const data = pageData || {}
@@ -778,17 +961,154 @@ function createDetailObjectContext(target, pageData) {
 
 function createDetailPrompt(target, question, pageData) {
   const object = target || FALLBACK_TARGETS[0]
-  const questionText = text(question, '我该怎么找？')
+  const data = pageData || {}
+  const questionText = text(question, '我该怎么找？').trim()
+  const history = Array.isArray(data.detailChatHistory) ? data.detailChatHistory.slice(-8) : []
+  const historyText = history.map(item => {
+    return `${item.role === 'user' ? '用户' : 'SkyMate'}：${item.content}`
+  }).join('\n')
   return [
-    '请根据下面的星体上下文回答用户问题。',
-    '回答要求：必须简洁明了，结构化输出，最多 3 行。每行不超过 28 个汉字。',
-    '固定格式：方向：...；找法：...；知识：...。',
-    '知识行只讲一个和当前星体有关的天文点，优先包含颜色、大小或尺度；不要写长篇百科。',
+    '你是 SkyMate，一个运行在 Rokid Glasses 上的观星助手。',
+    '你正在当前星体详情上下文中回答用户。',
+    '优先参考当前星图知识库和当前选中目标。',
     '',
+    '【星图知识库检索结果】',
+    retrieveSkyKnowledge(questionText, data) || '暂无',
+    '',
+    '【当前选中目标】',
     createDetailObjectContext(object, pageData),
     '',
-    `用户问题：${questionText}`
+    '【最近对话】',
+    historyText || '暂无',
+    '',
+    '【用户问题】',
+    questionText,
+    '',
+    '【回答要求】',
+    '1. 自然回答，不要强制方向、找法、知识三行格式。',
+    '2. 如果用户问“它”“这个”，默认指当前选中目标。',
+    '3. 当前观测事实优先参考星图知识库。',
+    '4. 如果知识库来自 fallback 或不可靠，要说明不确定。',
+    '5. 回答适合语音播报，通常 2 到 5 句话。'
   ].join('\n')
+}
+
+function createGeneralChatPrompt(question, pageData) {
+  const data = pageData || {}
+  const history = Array.isArray(data.generalChatHistory) ? data.generalChatHistory.slice(-8) : []
+  const historyText = history.map(item => {
+    return `${item.role === 'user' ? '用户' : 'SkyMate'}：${item.content}`
+  }).join('\n')
+
+  return [
+    '你是 SkyMate，一个面向智能眼镜用户的观星助手。',
+    '你可以回答观星、星体、星座、月亮、行星、流星、望远镜和观测技巧问题。',
+    '',
+    '【当前页面状态】',
+    `mode：${text(data.mode, 'unknown')}`,
+    `位置：${text(data.locationName, '未知')}`,
+    `当前选中目标：${data.selectedObject ? text(data.selectedObject.name, '未知') : '暂无'}`,
+    '',
+    '【星图知识库检索结果】',
+    retrieveSkyKnowledge(question, data) || '暂无',
+    '',
+    '【最近对话】',
+    historyText || '暂无',
+    '',
+    '【用户问题】',
+    text(question, ''),
+    '',
+    '【回答要求】',
+    '1. 先给结论，再补充原因。',
+    '2. 回答自然、简短，适合语音播报。',
+    '3. 如果用户问当前能看到什么、哪个更亮、哪个更容易找，优先参考星图知识库。',
+    '4. 如果知识库不可靠，要说明不确定。',
+    '5. 如果问题需要位置但没有位置，请提示用户说城市或授权定位。'
+  ].join('\n')
+}
+
+function isBackIntent(input) {
+  const q = text(input, '').trim()
+  return q === '返回' || q === '退出' || q === '回到首页' || q === '回到总览' || q.indexOf('返回上一') >= 0
+}
+
+function isSkyChartIntent(input) {
+  const q = text(input, '')
+  return q.indexOf('今晚') >= 0 ||
+    q.indexOf('今天') >= 0 ||
+    q.indexOf('能看到什么') >= 0 ||
+    q.indexOf('看得到什么') >= 0 ||
+    q.indexOf('查星空') >= 0 ||
+    q.indexOf('星图') >= 0 ||
+    q.indexOf('重新定位') >= 0 ||
+    q.indexOf('刷新') >= 0
+}
+
+function isAstronomyQuestion(input) {
+  const q = text(input, '')
+  const words = ['星', '月亮', '行星', '恒星', '星座', '流星', '银河', '望远镜', '视星等', '观星', '天文']
+  return words.some(word => q.indexOf(word) >= 0)
+}
+
+function hasLocationSignal(input) {
+  return !!coordinateFromText(input) || !!cityFromText(input)
+}
+
+function isSwitchObjectIntent(input, context) {
+  const q = text(input, '')
+  const objects = context && Array.isArray(context.visibleObjects) ? context.visibleObjects : []
+  if (!objects.length) return false
+  if (q.indexOf('换一个') >= 0 || q.indexOf('下一个') >= 0 || q.indexOf('另一个') >= 0) return true
+  return objects.some(item => q.indexOf(text(item.name, '')) >= 0)
+}
+
+function findObjectByHint(hint, objects, selectedKey) {
+  const q = text(hint, '')
+  const list = Array.isArray(objects) ? objects : []
+  const named = list.find(item => q.indexOf(text(item.name, '')) >= 0 || q.indexOf(text(item.key, '')) >= 0)
+  if (named) return named
+  const currentIndex = Math.max(0, list.findIndex(item => item.key === selectedKey))
+  if (q.indexOf('上一个') >= 0) return list[(currentIndex - 1 + list.length) % list.length]
+  return list[(currentIndex + 1) % list.length] || list[0] || null
+}
+
+function createLocalGeneralAnswer(question, pageData) {
+  const data = pageData || {}
+  const q = text(question, '')
+  const kb = data.skyKnowledgeBase || {}
+  const objects = Array.isArray(kb.objects) ? kb.objects : []
+
+  if (objects.length && (q.indexOf('最亮') >= 0 || q.indexOf('哪个') >= 0 || q.indexOf('容易') >= 0)) {
+    const target = objects.slice().sort((left, right) => visibilityScore(left) - visibilityScore(right))[0]
+    const reliability = kb.reliable ? '' : '不过这不是实时精确星图，'
+    return `${reliability}当前列表里优先看 ${target.name}。它在${target.direction}方向，高度${target.altitude}，亮度${target.magnitude}，比较适合作为第一个目标。`
+  }
+
+  if (q.indexOf('视星等') >= 0) {
+    return '视星等是天体看起来有多亮的量。数字越小越亮，负数会更亮；城市里通常优先看月亮、亮行星和低星等亮星。'
+  }
+
+  if (q.indexOf('银河') >= 0 || q.indexOf('光污染') >= 0) {
+    return '城市里很难看到银河，主要是光污染把暗弱的银河背景淹没了。想看银河，需要远离城市灯光，选晴朗、少月光的夜晚。'
+  }
+
+  if (!data.currentPlace && isSkyChartIntent(q)) {
+    return '我还没有拿到你眼镜的当前位置。请告诉我城市，或允许获取当前位置。'
+  }
+
+  return '可以。我会优先结合当前位置和当前星图回答；如果没有实时数据，我会说明不确定。'
+}
+
+function selectedObjectFromQuery(value, targets) {
+  const parsed = parseJsonMaybe(value)
+  if (parsed && typeof parsed === 'object') return normalizeTarget(parsed, 0)
+
+  const raw = text(value, '')
+  if (!raw) return null
+  const list = (Array.isArray(targets) ? targets : []).concat(FALLBACK_TARGETS)
+  const matched = list.find(item => raw === item.key || raw === item.name || raw.indexOf(item.name) >= 0)
+  if (matched) return normalizeTarget(matched, 0)
+  return normalizeTarget({ name: raw, type: '天体', locate: '请结合当前星图或用户描述确认方向。' }, 0)
 }
 
 function createDetailState(target, pageData, question, answer) {
@@ -809,6 +1129,8 @@ export default {
     buildVersion: BUILD_VERSION,
     pageTag: '待唤醒',
     locationName: '等待位置',
+    topMetaLine: '等待更新',
+    observationMetaLine: '基于当前位置 · 等待更新',
     verdict: 'SkyMate 帮你看今晚星空。',
     condition: '使用当前位置后，我会给出今晚的观星建议。',
     assistantLine: '点击使用当前位置，开始判断今晚能看到什么。',
@@ -817,6 +1139,11 @@ export default {
     asrStatus: 'idle',
     eventStatus: 'waiting',
     locationLine: '尚未定位',
+    currentPlace: null,
+    skyKnowledgeBase: createSkyKnowledgeBase({}),
+    detailChatHistory: [],
+    generalChatHistory: [],
+    lastIntent: '',
     detailQuestion: '可以问：我该怎么找？',
     detailAnswer: detailGuideAnswer(FALLBACK_TARGETS[0], ''),
     detailIntro: createDetailIntro(FALLBACK_TARGETS[0]),
@@ -836,6 +1163,10 @@ export default {
     errorDisplay: 'none'
   }, createHudSlots(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key), createSelectedSkyOverlay(FALLBACK_TARGETS[0], 0)),
 
+  skyKnowledgeRaw: null,
+  detailAgentSession: null,
+  generalAgentSession: null,
+
   onLoad(rawQuery) {
     console.log('[SkyMate] page onLoad', rawQuery || {})
     const query = queryFromRaw(rawQuery)
@@ -844,6 +1175,51 @@ export default {
     const userText = query.userText || query.prompt || query.question || query.message || query.input
     const placeText = userText || query.locationName || query.city || query.location || ''
     const queryPlace = placeFromQuery(query)
+
+    if (query.mode === 'detail' && query.selectedObject) {
+      const normalizedTargets = Array.isArray(targets) ? targets.map((item, index) => normalizeTarget(item, index)) : []
+      const selected = selectedObjectFromQuery(query.selectedObject, normalizedTargets)
+      if (selected) {
+        const visibleObjects = normalizedTargets.length ? normalizedTargets : [selected]
+        const skyObjects = createSkyChartObjects(visibleObjects, selected.key)
+        const locationName = text(query.locationName || query.city || query.location, this.data.locationName)
+        const generatedAt = safeGeneratedAt(readChartTimeValue(chart))
+        const topMetaLine = createTopMetaLine(generatedAt)
+        const observationMetaLine = createObservationMetaLine(locationName, generatedAt)
+        const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
+          source: chart ? 'api' : 'page-query',
+          reliable: !!chart,
+          generatedAt,
+          location: queryPlace || { name: text(query.locationName || query.city || query.location, '当前位置') },
+          objects: visibleObjects,
+          selectedObject: selected
+        }, Object.assign({}, this.data, {
+          mode: 'detail',
+          locationName,
+          topMetaLine,
+          observationMetaLine,
+          visibleObjects,
+          selectedObject: selected
+        }))
+        this.setData(Object.assign({
+          currentPlace: queryPlace || this.data.currentPlace,
+          locationName,
+          topMetaLine,
+          observationMetaLine,
+          visibleObjects,
+          selectedKey: selected.key,
+          selectedIndex: Math.max(0, visibleObjects.findIndex(item => item.key === selected.key)),
+          selectedObject: selected,
+          skyObjects,
+          skyKnowledgeBase: knowledge,
+          assistantLine: `正在围绕 ${selected.name} 回答。`,
+          requestStatus: 'detail query',
+          diagnosticLine: selected.key
+        }, createHudSlots(visibleObjects, selected.key), createSelectedSkyOverlay(selected, 0), createDetailState(selected, this.data)))
+        this.applyMode('detail')
+        return
+      }
+    }
 
     if (Array.isArray(targets) || chart) {
       this.showChartResult({
@@ -862,8 +1238,9 @@ export default {
     }
 
     if (placeText || query.mode === 'loading') {
-      this.setData({ assistantLine: userText ? `收到问题：${userText}` : '收到页面查询，正在查星空。', diagnosticLine: 'query text' })
-      this.handleUserText(placeText || '今晚苏州能看到什么')
+      this.setData({ assistantLine: userText ? `收到问题：${userText}` : '正在尝试读取当前位置。', diagnosticLine: 'query text' })
+      if (placeText) this.handleConversationInput(placeText, 'page-query')
+      else this.loadCurrentLocationOrFallback()
       return
     }
 
@@ -878,10 +1255,23 @@ export default {
     console.log('[SkyMate] page onReady')
   },
 
+  onUnload() {
+    this.destroyDetailAgentSession()
+    if (this.generalAgentSession && typeof this.generalAgentSession.destroy === 'function') {
+      this.generalAgentSession.destroy()
+    }
+    this.generalAgentSession = null
+  },
+
   onVoiceWakeup(event) {
     console.log('[SkyMate] voice wakeup', event || {})
+    const keyword = text(event && event.keyword, 'leqi')
+    if (keyword && keyword !== 'leqi') {
+      this.reportEvent(`voiceWakeupIgnored:${keyword}`)
+      return
+    }
     this.reportEvent('voiceWakeup')
-    this.startAsr()
+    this.startUnifiedAsr()
   },
 
   onKeyUp(event) {
@@ -902,6 +1292,9 @@ export default {
     }
 
     if (isUp || isDown) {
+      const mode = this.data.mode
+      const canMoveSelection = mode === 'overview' || mode === 'detail' || mode === 'locate'
+      if (!canMoveSelection) return
       if (event && event.preventDefault) event.preventDefault()
       this.moveSelection(isUp ? -1 : 1)
       return
@@ -951,6 +1344,11 @@ export default {
     this.applyMode('chat')
   },
 
+  startUnifiedAsr() {
+    this.reportEvent('startUnifiedAsr')
+    this.startAsr()
+  },
+
   startAsr() {
     this.reportEvent('startAsr')
     this.applyMode('chat')
@@ -979,7 +1377,7 @@ export default {
         asrStatus: transcript ? 'success' : 'empty',
         assistantLine: transcript ? `我听到：${transcript}` : '我听到了，正在判断。'
       })
-      if (transcript) this.handleUserText(transcript)
+      if (transcript) this.handleConversationInput(transcript, 'voice')
       else this.loadCurrentLocationOrFallback()
     }
 
@@ -1020,7 +1418,7 @@ export default {
           asrStatus: transcript ? 'wx-success' : 'wx-empty',
           assistantLine: transcript ? `我听到：${transcript}` : '我听到了，正在判断。'
         })
-        if (transcript) this.handleUserText(transcript)
+        if (transcript) this.handleConversationInput(transcript, 'voice')
         else this.loadCurrentLocationOrFallback()
       }
 
@@ -1064,13 +1462,13 @@ export default {
       detailAgentStatus: 'listening',
       detailQuestion: '正在听...',
       detailAnswer: '说出你想问的问题，比如“我该怎么找它？”',
-      assistantLine: '我在听，只回答当前星体怎么找。'
+      assistantLine: '我在听，可以继续追问当前星体。'
     })
 
     const Recognition = getSpeechRecognitionCandidate()
     if (!Recognition) {
       if (this.startWxDetailAsr()) return
-      this.askDetailAgent('我该怎么找？')
+      this.handleConversationInput('我该怎么找？', 'voice')
       return
     }
 
@@ -1083,7 +1481,7 @@ export default {
       this.setData({
         asrStatus: transcript ? 'detail-success' : 'detail-empty'
       })
-      this.askDetailAgent(transcript || '我该怎么找？')
+      this.handleConversationInput(transcript || '我该怎么找？', 'voice')
     }
 
     recognition.onerror = (event) => {
@@ -1123,7 +1521,7 @@ export default {
         const transcript = extractTranscriptFromEvent(event)
         console.log('[SkyMate] wx detail ASR result', transcript, event || {})
         this.setData({ asrStatus: transcript ? 'detail-wx-success' : 'detail-wx-empty' })
-        this.askDetailAgent(transcript || '我该怎么找？')
+        this.handleConversationInput(transcript || '我该怎么找？', 'voice')
       }
 
       const onError = (error) => {
@@ -1161,13 +1559,67 @@ export default {
     return false
   },
 
+  async getDetailAgentSession() {
+    if (this.detailAgentSession) return this.detailAgentSession
+
+    const LanguageModel = getLanguageModelCandidate()
+    if (!LanguageModel || typeof LanguageModel.availability !== 'function' || typeof LanguageModel.create !== 'function') return null
+
+    const availability = await LanguageModel.availability()
+    if (availability !== 'available') return null
+
+    this.detailAgentSession = await LanguageModel.create({
+      initialPrompts: [
+        {
+          role: 'system',
+          content: '你是 SkyMate，一个简短、自然、适合智能眼镜语音播报的观星助手。'
+        }
+      ]
+    })
+
+    return this.detailAgentSession
+  },
+
+  async getGeneralAgentSession() {
+    if (this.generalAgentSession) return this.generalAgentSession
+
+    const LanguageModel = getLanguageModelCandidate()
+    if (!LanguageModel || typeof LanguageModel.availability !== 'function' || typeof LanguageModel.create !== 'function') return null
+
+    const availability = await LanguageModel.availability()
+    if (availability !== 'available') return null
+
+    this.generalAgentSession = await LanguageModel.create({
+      initialPrompts: [
+        {
+          role: 'system',
+          content: '你是 SkyMate，一个面向智能眼镜用户的观星助手。回答要简短、自然、结论优先。'
+        }
+      ]
+    })
+
+    return this.generalAgentSession
+  },
+
+  destroyDetailAgentSession() {
+    if (this.detailAgentSession && typeof this.detailAgentSession.destroy === 'function') {
+      this.detailAgentSession.destroy()
+    }
+    this.detailAgentSession = null
+  },
+
   async askDetailAgent(question) {
     const target = this.data.selectedObject || FALLBACK_TARGETS[0]
     const questionText = text(question, '我该怎么找？')
     const fallbackAnswer = detailGuideAnswer(target, questionText)
     const context = createDetailObjectContext(target, this.data)
+    const userHistory = (this.data.detailChatHistory || []).concat({
+      role: 'user',
+      content: questionText
+    }).slice(-10)
 
     this.setData({
+      detailChatHistory: userHistory,
       detailObjectContext: context,
       detailQuestion: `你问：${questionText}`,
       detailAnswer: '正在结合当前星图回答...',
@@ -1175,9 +1627,17 @@ export default {
       assistantLine: `正在围绕 ${text(target.name, '当前星体')} 回答。`
     })
 
-    const LanguageModel = getLanguageModelCandidate()
-    if (!LanguageModel || typeof LanguageModel.availability !== 'function' || typeof LanguageModel.create !== 'function') {
+    let session = null
+    try {
+      session = await this.getDetailAgentSession()
+    } catch (error) {
+      console.log('[SkyMate] detail session unavailable', error || {})
+    }
+
+    if (!session || typeof session.prompt !== 'function') {
+      const nextHistory = userHistory.concat({ role: 'assistant', content: fallbackAnswer }).slice(-10)
       this.setData({
+        detailChatHistory: nextHistory,
         detailAnswer: fallbackAnswer,
         detailAgentStatus: 'local',
         assistantLine: '当前没有大模型配置，已用星体上下文给出本地回答。'
@@ -1186,21 +1646,12 @@ export default {
     }
 
     try {
-      const availability = await LanguageModel.availability()
-      if (availability !== 'available') throw new Error('LanguageModel unavailable')
-
-      const session = await LanguageModel.create({
-        initialPrompts: [
-          {
-            role: 'system',
-            content: '你是 SkyMate，一个智能眼镜里的观星助手。回答要简短、自然、直接，帮助用户在真实天空中找到当前星体。'
-          }
-        ]
-      })
-      const modelAnswer = await session.prompt(createDetailPrompt(target, questionText, this.data))
+      const promptData = Object.assign({}, this.data, { detailChatHistory: userHistory })
+      const modelAnswer = await session.prompt(createDetailPrompt(target, questionText, promptData))
       const answer = shortText(modelAnswer || fallbackAnswer, 150)
-      if (session && typeof session.destroy === 'function') session.destroy()
+      const nextHistory = userHistory.concat({ role: 'assistant', content: answer }).slice(-10)
       this.setData({
+        detailChatHistory: nextHistory,
         detailAnswer: answer,
         detailAgentStatus: 'model',
         assistantLine: answer
@@ -1208,7 +1659,9 @@ export default {
       return answer
     } catch (error) {
       console.log('[SkyMate] detail agent fallback', error || {})
+      const nextHistory = userHistory.concat({ role: 'assistant', content: fallbackAnswer }).slice(-10)
       this.setData({
+        detailChatHistory: nextHistory,
         detailAnswer: fallbackAnswer,
         detailAgentStatus: 'local',
         assistantLine: '大模型暂时不可用，已按当前星体上下文回答。'
@@ -1217,41 +1670,212 @@ export default {
     }
   },
 
+  async askGeneralAgent(question) {
+    const questionText = text(question, '').trim()
+    if (!questionText) return this.loadCurrentLocationOrFallback()
+
+    const fallbackAnswer = createLocalGeneralAnswer(questionText, this.data)
+    const userHistory = (this.data.generalChatHistory || []).concat({
+      role: 'user',
+      content: questionText
+    }).slice(-10)
+
+    this.applyMode('chat')
+    this.setData({
+      generalChatHistory: userHistory,
+      assistantLine: '正在结合当前页面和星图上下文回答。',
+      requestStatus: 'general thinking',
+      diagnosticLine: shortText(questionText, 62)
+    })
+
+    let session = null
+    try {
+      session = await this.getGeneralAgentSession()
+    } catch (error) {
+      console.log('[SkyMate] general session unavailable', error || {})
+    }
+
+    if (!session || typeof session.prompt !== 'function') {
+      const nextHistory = userHistory.concat({ role: 'assistant', content: fallbackAnswer }).slice(-10)
+      this.setData({
+        generalChatHistory: nextHistory,
+        assistantLine: fallbackAnswer,
+        requestStatus: 'general local'
+      })
+      return fallbackAnswer
+    }
+
+    try {
+      const promptData = Object.assign({}, this.data, { generalChatHistory: userHistory })
+      const modelAnswer = await session.prompt(createGeneralChatPrompt(questionText, promptData))
+      const answer = shortText(modelAnswer || fallbackAnswer, 150)
+      const nextHistory = userHistory.concat({ role: 'assistant', content: answer }).slice(-10)
+      this.setData({
+        generalChatHistory: nextHistory,
+        assistantLine: answer,
+        requestStatus: 'general model'
+      })
+      return answer
+    } catch (error) {
+      console.log('[SkyMate] general agent fallback', error || {})
+      const nextHistory = userHistory.concat({ role: 'assistant', content: fallbackAnswer }).slice(-10)
+      this.setData({
+        generalChatHistory: nextHistory,
+        assistantLine: fallbackAnswer,
+        requestStatus: 'general local'
+      })
+      return fallbackAnswer
+    }
+  },
+
   async handleUserText(input) {
     this.reportEvent('handleUserText')
-    console.log('[SkyMate] handleUserText input', input)
+    return this.handleConversationInput(input, 'legacy')
+  },
+
+  getConversationContext() {
+    return {
+      mode: this.data.mode,
+      currentPlace: this.data.currentPlace,
+      locationName: this.data.locationName,
+      visibleObjects: this.data.visibleObjects || [],
+      selectedObject: this.data.selectedObject,
+      skyKnowledgeBase: this.data.skyKnowledgeBase,
+      verdict: this.data.verdict,
+      condition: this.data.condition,
+      detailChatHistory: this.data.detailChatHistory || [],
+      generalChatHistory: this.data.generalChatHistory || [],
+      lastIntent: this.data.lastIntent
+    }
+  },
+
+  detectIntent(input, context) {
+    const q = text(input, '')
+    const mode = context && context.mode
+
+    if (isBackIntent(q)) return { type: 'navigate_back' }
+    if (isSwitchObjectIntent(q, context)) return { type: 'switch_object', targetHint: q }
+    if (
+      mode === 'detail' &&
+      context &&
+      context.selectedObject &&
+      !hasLocationSignal(q) &&
+      q.indexOf('刷新') < 0 &&
+      q.indexOf('重新定位') < 0 &&
+      q.indexOf('今晚能看到什么') < 0 &&
+      q.indexOf('现在能看到什么') < 0
+    ) {
+      return { type: 'detail_question' }
+    }
+    if (hasLocationSignal(q) || isSkyChartIntent(q)) return { type: 'sky_chart_query' }
+    if (isAstronomyQuestion(q)) return { type: 'general_astronomy_question' }
+    return { type: 'general_astronomy_question' }
+  },
+
+  async handleConversationInput(input, source) {
+    this.reportEvent(`conversation:${source || 'unknown'}`)
+    console.log('[SkyMate] conversation input', source, input)
+    const questionText = text(input, '').trim()
+    if (!questionText) return this.loadCurrentLocationOrFallback()
+
+    const context = this.getConversationContext()
+    const intent = this.detectIntent(questionText, context)
+    this.setData({ lastIntent: intent.type })
+
+    if (intent.type === 'navigate_back') {
+      this.goBack()
+      return null
+    }
+
+    if (intent.type === 'switch_object') {
+      return this.switchSelectedObject(intent)
+    }
+
+    if (intent.type === 'sky_chart_query') {
+      return this.resolvePlaceAndLoadSkyChart(questionText)
+    }
+
+    if (intent.type === 'detail_question') {
+      return this.askDetailAgent(questionText)
+    }
+
+    return this.askGeneralAgent(questionText)
+  },
+
+  async resolvePlaceFromText(input) {
     const coordinate = coordinateFromText(input)
     if (coordinate) {
       console.log('[SkyMate] text coordinate resolved', coordinate)
-      this.loadSkyChart(coordinate)
-      return
+      return coordinate
     }
 
     const city = cityFromText(input)
     if (city) {
       console.log('[SkyMate] local city resolved', city)
-      this.loadSkyChart(city)
-      return
+      return city
     }
 
     const geocodedPlace = await this.resolveLocationWithOnlineGeocoder(input)
-    if (geocodedPlace) {
-      this.loadSkyChart(geocodedPlace)
-      return
-    }
+    if (geocodedPlace) return geocodedPlace
 
     const resolvedPlace = await this.resolveLocationWithModel(input)
-    if (resolvedPlace) {
-      this.loadSkyChart(resolvedPlace)
-      return
+    if (resolvedPlace) return resolvedPlace
+
+    return null
+  },
+
+  async resolvePlaceAndLoadSkyChart(input) {
+    const place = await this.resolvePlaceFromText(input)
+
+    if (place) {
+      this.setData({ currentPlace: place })
+      this.loadSkyChart(place)
+      return place
     }
 
-    this.setData({
-      requestStatus: 'location unresolved',
-      diagnosticLine: shortText(text(input, 'empty'), 62),
-      assistantLine: '我没有解析出这个地点，请说城市名或允许获取当前位置。'
-    })
-    this.applyMode('chat')
+    if (this.data.currentPlace && isSkyChartIntent(input)) {
+      this.loadSkyChart(this.data.currentPlace)
+      return this.data.currentPlace
+    }
+
+    try {
+      const runtimePlace = await this.readRuntimeLocation()
+      this.setData({ currentPlace: runtimePlace })
+      this.loadSkyChart(runtimePlace)
+      return runtimePlace
+    } catch (error) {
+      console.log('[SkyMate] conversation location unavailable', error || {})
+      this.applyMode('chat')
+      this.setData({
+        requestStatus: 'location unresolved',
+        diagnosticLine: shortText(errorText(error), 62),
+        assistantLine: '我还没有拿到你眼镜的当前位置。请告诉我城市，或允许获取当前位置。'
+      })
+      return null
+    }
+  },
+
+  switchSelectedObject(intent) {
+    const targets = this.data.visibleObjects && this.data.visibleObjects.length ? this.data.visibleObjects : FALLBACK_TARGETS
+    const target = findObjectByHint(intent && intent.targetHint, targets, this.data.selectedKey)
+    if (!target) return this.askGeneralAgent(text(intent && intent.targetHint, '换一个'))
+    const index = Math.max(0, targets.findIndex(item => item.key === target.key))
+    this.destroyDetailAgentSession()
+    const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
+      objects: targets,
+      selectedObject: target
+    }, Object.assign({}, this.data, { visibleObjects: targets, selectedObject: target }))
+    this.setData(Object.assign({
+      selectedIndex: index,
+      selectedKey: target.key,
+      selectedObject: target,
+      skyObjects: createSkyChartObjects(this.data.skyObjects, target.key),
+      skyKnowledgeBase: knowledge,
+      detailChatHistory: [],
+      assistantLine: `已切换到 ${target.name}，可以继续追问。`
+    }, createHudSlots(targets, target.key), createSelectedSkyOverlay(target, index), createDetailState(target, this.data)))
+    this.applyMode('detail')
+    return target
   },
 
   async resolveLocationWithOnlineGeocoder(input) {
@@ -1352,6 +1976,8 @@ export default {
     this.reportEvent('locateOnly')
     this.setData({
       locationName: '正在定位',
+      topMetaLine: '正在定位',
+      observationMetaLine: '基于当前位置 · 正在定位',
       requestStatus: 'location',
       diagnosticLine: 'try location',
       assistantLine: '正在读取 GPS 位置。',
@@ -1363,7 +1989,10 @@ export default {
       const latText = Number.isFinite(place.lat) ? place.lat.toFixed(4) : '--'
       const lonText = Number.isFinite(place.lon) ? place.lon.toFixed(4) : '--'
       this.setData({
+        currentPlace: place,
         locationName: place.name || '当前位置',
+        topMetaLine: createTopMetaLine(Date.now()),
+        observationMetaLine: createObservationMetaLine(place.name || '当前位置', Date.now()),
         requestStatus: 'location ok',
         diagnosticLine: `lat=${latText} lon=${lonText}`,
         assistantLine: '已拿到当前位置，可以开始语音提问。',
@@ -1384,6 +2013,8 @@ export default {
     this.applyMode('loading')
     this.setData({
       locationName: '正在定位',
+      topMetaLine: '正在定位',
+      observationMetaLine: '基于当前位置 · 正在定位',
       requestStatus: 'location',
       diagnosticLine: 'try location',
       assistantLine: '我先尝试读取设备当前位置。'
@@ -1391,14 +2022,16 @@ export default {
 
     try {
       const place = await this.readRuntimeLocation()
+      this.setData({ currentPlace: place })
       this.loadSkyChart(place)
     } catch (error) {
       console.log('[SkyMate] location unavailable', error || {})
       this.setData({
-        requestStatus: 'location fallback',
-        diagnosticLine: errorText(error)
+        requestStatus: 'location unresolved',
+        diagnosticLine: errorText(error),
+        assistantLine: '我还没有拿到你眼镜的当前位置。请告诉我城市，或允许获取当前位置。'
       })
-      this.showFallback('当前位置', errorText(error))
+      this.applyMode('chat')
     }
   },
 
@@ -1461,10 +2094,22 @@ export default {
   },
 
   async loadSkyChart(city) {
-    const place = city || CITY_COORDS[0]
+    const place = city || this.data.currentPlace
+    if (!place) {
+      this.applyMode('chat')
+      this.setData({
+        requestStatus: 'location unresolved',
+        diagnosticLine: 'no place',
+        assistantLine: '我需要知道你的位置，才能查当前星图。请告诉我城市，或允许获取当前位置。'
+      })
+      return
+    }
     this.applyMode('loading')
     this.setData({
+      currentPlace: place,
       locationName: place.name,
+      topMetaLine: createTopMetaLine(Date.now()),
+      observationMetaLine: createObservationMetaLine(place.name, Date.now()),
       requestStatus: 'loading',
       diagnosticLine: `lat=${place.lat} lon=${place.lon}`,
       assistantLine: `正在查 ${place.name} 今晚的星空。`
@@ -1484,7 +2129,9 @@ export default {
       this.showChartResult({
         chart,
         locationName: place.name,
-        source: 'sky-chart'
+        source: 'sky-chart',
+        place,
+        query: payload
       })
     } catch (error) {
       console.log('[SkyMate] sky chart failed', error || {})
@@ -1527,7 +2174,7 @@ export default {
       lon: payload.lon,
       latitude: payload.lat,
       longitude: payload.lon,
-      total_limit: payload.total_limit || 28
+      total_limit: payload.total_limit || SKY_REQUEST_TARGET_LIMIT
     }
 
     const retryResponse = await fetch(SKY_CHART_ENDPOINT, {
@@ -1563,23 +2210,48 @@ export default {
     const chart = options && options.chart
     const providedTargets = options && options.targets
     const locationName = text(options && options.locationName, '当前位置')
-    const targets = providedTargets ? providedTargets.map((item, index) => normalizeTarget(item, index)).slice(0, HUD_TARGET_SLOT_COUNT) : pickTargets(chart)
+    const targets = providedTargets ? providedTargets.map((item, index) => normalizeTarget(item, index)) : pickTargets(chart)
     const skyObjects = collectSkyObjects(chart || providedTargets, targets)
     const first = targets[0] || FALLBACK_TARGETS[0]
     const source = text(options && options.source, 'sky-chart')
-    const targetNames = targets.slice(0, 2).map(item => item.name).join('、')
-    const verdict = targets.length
-      ? `${locationName}今晚优先看 ${targetNames}`
-      : `${locationName}今晚先看亮星和亮行星`
+    const place = (options && options.place) || this.data.currentPlace || { name: locationName }
+    const generatedAt = safeGeneratedAt(readChartTimeValue(chart))
+    const topMetaLine = createTopMetaLine(generatedAt)
+    const observationMetaLine = createObservationMetaLine(locationName, generatedAt)
+    const verdict = '推荐观测列表'
     const condition = '城市里优先看亮星、行星和月亮；深空目标更适合望远镜或暗处。'
+    const pageData = Object.assign({}, this.data, {
+      locationName,
+      topMetaLine,
+      observationMetaLine,
+      verdict,
+      condition,
+      visibleObjects: targets,
+      selectedObject: first
+    })
+    const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
+      source: 'api',
+      reliable: true,
+      generatedAt,
+      location: place,
+      query: options && options.query,
+      objects: targets,
+      selectedObject: first
+    }, pageData)
+
+    this.skyKnowledgeRaw = chart || null
 
     this.setData(Object.assign({
+      currentPlace: place,
       visibleObjects: targets,
       selectedKey: first.key,
       selectedIndex: 0,
       selectedObject: first,
       locationName,
       skyObjects: createSkyChartObjects(skyObjects, first.key),
+      skyKnowledgeBase: knowledge,
+      topMetaLine,
+      observationMetaLine,
       verdict,
       condition,
       assistantLine: '已筛出最适合普通用户看的目标。',
@@ -1587,6 +2259,8 @@ export default {
       diagnosticLine: `targets=${targets.length} sky=${skyObjects.length}`
     }, createHudSlots(targets, first.key), createSelectedSkyOverlay(first, 0), createDetailState(first, {
       locationName,
+      topMetaLine,
+      observationMetaLine,
       verdict,
       condition
     })))
@@ -1595,22 +2269,49 @@ export default {
 
   showFallback(locationName, reason) {
     console.log('[SkyMate] fallback reason', reason || '')
-    const verdict = `暂时查不到 ${locationName} 的实时星图`
-    const condition = '可以先按一般情况看月亮、亮星和行星；深空目标不要在城市里强求。'
+    const generatedAt = Date.now()
+    const topMetaLine = createTopMetaLine(generatedAt)
+    const observationMetaLine = createObservationMetaLine(locationName, generatedAt)
+    const verdict = '推荐观测列表'
+    const condition = '下面是一般情况下较容易尝试的亮目标，不代表当前位置和当前时间的精确结果。'
+    const fallbackPlace = this.data.currentPlace || { name: locationName }
+    const pageData = Object.assign({}, this.data, {
+      locationName,
+      topMetaLine,
+      observationMetaLine,
+      verdict,
+      condition,
+      visibleObjects: FALLBACK_TARGETS,
+      selectedObject: FALLBACK_TARGETS[0]
+    })
+    const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
+      source: 'fallback',
+      reliable: false,
+      generatedAt,
+      location: fallbackPlace,
+      query: null,
+      objects: FALLBACK_TARGETS,
+      selectedObject: FALLBACK_TARGETS[0]
+    }, pageData)
     this.setData(Object.assign({
       visibleObjects: FALLBACK_TARGETS,
       selectedKey: FALLBACK_TARGETS[0].key,
       selectedIndex: 0,
       selectedObject: FALLBACK_TARGETS[0],
       skyObjects: createSkyChartObjects(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key),
+      skyKnowledgeBase: knowledge,
       locationName,
+      topMetaLine,
+      observationMetaLine,
       verdict,
       condition,
-      assistantLine: '实时接口不可用时，已切到安全兜底建议。',
+      assistantLine: '实时星图暂时不可用，下面只是非实时兜底建议。',
       requestStatus: 'fallback',
       diagnosticLine: shortText(reason || 'fetch failed', 62)
     }, createHudSlots(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key), createSelectedSkyOverlay(FALLBACK_TARGETS[0], 0), createDetailState(FALLBACK_TARGETS[0], {
       locationName,
+      topMetaLine,
+      observationMetaLine,
       verdict,
       condition
     })))
@@ -1630,7 +2331,12 @@ export default {
   openDetail() {
     this.reportEvent('openDetail')
     const target = this.data.selectedObject || FALLBACK_TARGETS[0]
-    this.setData(createDetailState(target, this.data))
+    const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
+      selectedObject: target
+    }, Object.assign({}, this.data, { selectedObject: target }))
+    this.setData(Object.assign({
+      skyKnowledgeBase: knowledge
+    }, createDetailState(target, this.data)))
     this.applyMode('detail')
   },
 
@@ -1683,26 +2389,41 @@ export default {
     const nextIndex = (currentIndex + offset + targets.length) % targets.length
     const target = targets[nextIndex] || targets[0] || FALLBACK_TARGETS[0]
     this.reportEvent(`focus:${target.key}`)
+    this.destroyDetailAgentSession()
+    const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
+      objects: targets,
+      selectedObject: target
+    }, Object.assign({}, this.data, { visibleObjects: targets, selectedObject: target }))
     this.setData(Object.assign({
       selectedIndex: nextIndex,
       selectedKey: target.key,
       selectedObject: target,
-      skyObjects: createSkyChartObjects(this.data.skyObjects, target.key)
+      skyObjects: createSkyChartObjects(this.data.skyObjects, target.key),
+      skyKnowledgeBase: knowledge,
+      detailChatHistory: []
     }, createHudSlots(targets, target.key), createSelectedSkyOverlay(target, nextIndex), createDetailState(target, this.data)))
   },
 
   selectObject(event) {
+    if (event && event.stopPropagation) event.stopPropagation()
     const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {}
     const key = dataset.key || this.data.selectedKey
     const allObjects = (this.data.visibleObjects || []).concat(this.data.skyObjects || [])
     const target = allObjects.find(item => item.key === key) || this.data.visibleObjects[0] || FALLBACK_TARGETS[0]
     const index = Math.max(0, this.data.visibleObjects.findIndex(item => item.key === target.key))
     this.reportEvent(`selectObject:${key}`)
+    this.destroyDetailAgentSession()
+    const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
+      objects: this.data.visibleObjects,
+      selectedObject: target
+    }, Object.assign({}, this.data, { selectedObject: target }))
     this.setData(Object.assign({
       selectedIndex: index,
       selectedKey: target.key,
       selectedObject: target,
-      skyObjects: createSkyChartObjects(this.data.skyObjects, target.key)
+      skyObjects: createSkyChartObjects(this.data.skyObjects, target.key),
+      skyKnowledgeBase: knowledge,
+      detailChatHistory: []
     }, createHudSlots(this.data.visibleObjects, target.key), createSelectedSkyOverlay(target, index), createDetailState(target, this.data)))
     this.applyMode('detail')
   }
@@ -1710,11 +2431,10 @@ export default {
 </script>
 
 <page>
-  <view class="shell card {{ mode }}" tabindex="0" focusable="true" bindkeyup="onKeyUp">
+  <view class="shell card {{ mode }}" tabindex="0" focusable="true">
     <view class="top-row">
       <view>
         <text class="brand">SkyMate</text>
-        <text class="meta">{{ locationName }}</text>
       </view>
       <view class="status-pill">
         <text class="status-pill-text">{{ pageTag }}</text>
@@ -1741,7 +2461,7 @@ export default {
           ink:for-item="item"
           ink:key="key"
           data-key="{{ item.key }}"
-          bindtap="selectObject"
+          catchtap="selectObject"
         ></text>
         <text
           class="sky-target-label"
@@ -1796,25 +2516,25 @@ export default {
 
     <view class="content overview-panel" style="display: {{ overviewDisplay }};">
       <text class="headline">{{ verdict }}</text>
-      <text class="body">{{ condition }}</text>
+      <text class="body">{{ observationMetaLine }}</text>
       <view class="target-row">
-        <button class="target-btn {{ target0Class }}" data-key="{{ target0Key }}" bindtap="selectObject">
+        <button class="target-btn {{ target0Class }}" data-key="{{ target0Key }}" catchtap="selectObject">
           <text class="target-name">{{ target0Name }}</text>
           <text class="target-meta">{{ target0Meta }}</text>
         </button>
-        <button class="target-btn {{ target1Class }}" data-key="{{ target1Key }}" bindtap="selectObject">
+        <button class="target-btn {{ target1Class }}" data-key="{{ target1Key }}" catchtap="selectObject">
           <text class="target-name">{{ target1Name }}</text>
           <text class="target-meta">{{ target1Meta }}</text>
         </button>
-        <button class="target-btn {{ target2Class }}" data-key="{{ target2Key }}" bindtap="selectObject">
+        <button class="target-btn {{ target2Class }}" data-key="{{ target2Key }}" catchtap="selectObject">
           <text class="target-name">{{ target2Name }}</text>
           <text class="target-meta">{{ target2Meta }}</text>
         </button>
-        <button class="target-btn {{ target3Class }}" data-key="{{ target3Key }}" bindtap="selectObject">
+        <button class="target-btn {{ target3Class }}" data-key="{{ target3Key }}" catchtap="selectObject">
           <text class="target-name">{{ target3Name }}</text>
           <text class="target-meta">{{ target3Meta }}</text>
         </button>
-        <button class="target-btn {{ target4Class }}" data-key="{{ target4Key }}" bindtap="selectObject">
+        <button class="target-btn {{ target4Class }}" data-key="{{ target4Key }}" catchtap="selectObject">
           <text class="target-name">{{ target4Name }}</text>
           <text class="target-meta">{{ target4Meta }}</text>
         </button>
@@ -1829,7 +2549,7 @@ export default {
         <view class="detail-left">
           <text class="kicker">{{ selectedObject.type }}</text>
           <text class="headline">{{ selectedObject.name }}</text>
-          <text class="body detail-meta">{{ selectedObject.direction }} · 高度 {{ selectedObject.altitude }} · 亮度 {{ selectedObject.magnitude }}</text>
+          <text class="body detail-meta">{{ observationMetaLine }}</text>
           <view class="detail-block">
             <text class="detail-label">简介</text>
             <text class="detail-text detail-intro-text">{{ detailIntro }}</text>
@@ -1865,7 +2585,7 @@ export default {
       <text class="body">可以先按一般情况看月亮、亮星和行星。</text>
       <view class="button-grid compact">
         <button class="btn primary" bindtap="runCurrentLocation">重试定位</button>
-        <button class="btn secondary" bindtap="runSuzhouDemo">苏州兜底</button>
+        <button class="btn secondary" bindtap="runSuzhouDemo">示例城市</button>
       </view>
     </view>
 
@@ -4933,6 +5653,10 @@ export default {
   margin-top: 6px;
 }
 
+.detail-left .intro-block {
+  margin-top: 28px;
+}
+
 .detail-left .detail-label {
   height: 14px;
   font-size: 10px;
@@ -4949,4 +5673,5 @@ export default {
 .detail-left .detail-intro-text {
   max-height: 52px;
 }
+
 </style>
