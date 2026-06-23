@@ -1154,6 +1154,13 @@ export default {
     selectedObject: FALLBACK_TARGETS[0],
     visibleObjects: FALLBACK_TARGETS,
     skyObjects: createSkyChartObjects(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key),
+    isHome: true,
+    isChat: false,
+    isLoading: false,
+    isOverview: false,
+    isDetail: false,
+    isLocate: false,
+    isError: false,
     homeDisplay: 'block',
     chatDisplay: 'none',
     loadingDisplay: 'none',
@@ -1329,6 +1336,13 @@ export default {
     this.setData({
       mode: modeKey,
       pageTag: tagMap[modeKey],
+      isHome: modeKey === 'home',
+      isChat: modeKey === 'chat',
+      isLoading: modeKey === 'loading',
+      isOverview: modeKey === 'overview',
+      isDetail: modeKey === 'detail',
+      isLocate: modeKey === 'locate',
+      isError: modeKey === 'error',
       homeDisplay: modeKey === 'home' ? 'block' : 'none',
       chatDisplay: modeKey === 'chat' ? 'block' : 'none',
       loadingDisplay: modeKey === 'loading' ? 'block' : 'none',
@@ -2441,7 +2455,7 @@ export default {
       </view>
     </view>
 
-    <view class="sky-panel" bindtap="openDetail">
+    <view class="sky-panel" ink:if="{{ isOverview }}" bindtap="openDetail">
       <text class="sky-panel-title">实时星图</text>
       <text class="sky-panel-meta">地平坐标 · {{ objectCount }} 个推荐</text>
       <view class="sky-map">
@@ -2483,7 +2497,7 @@ export default {
       <text class="sky-meta">{{ selectedObject.direction }} · {{ selectedObject.altitude }}</text>
     </view>
 
-    <view class="content home-panel" style="display: {{ homeDisplay }};">
+    <view class="content home-panel" ink:if="{{ isHome }}">
       <text class="kicker">观星助手</text>
       <text class="headline">SkyMate 帮你看今晚星空</text>
       <text class="body">我会读取 GPS 位置，判断今晚是否值得出门，并标出月亮、行星和亮星的大致方向。</text>
@@ -2492,7 +2506,7 @@ export default {
       </view>
     </view>
 
-    <view class="content chat-panel" style="display: {{ chatDisplay }};">
+    <view class="content chat-panel" ink:if="{{ isChat }}">
       <text class="kicker">语音查询</text>
       <text class="headline">说出城市和问题</text>
       <text class="body">比如：今晚苏州能看到什么，或厦门能不能看金星。</text>
@@ -2508,13 +2522,13 @@ export default {
       <text class="location-readout">{{ locationLine }}</text>
     </view>
 
-    <view class="content loading-panel" style="display: {{ loadingDisplay }};">
+    <view class="content loading-panel" ink:if="{{ isLoading }}">
       <text class="headline">正在查星空</text>
       <text class="body">{{ assistantLine }}</text>
       <text class="debug-line">{{ diagnosticLine }}</text>
     </view>
 
-    <view class="content overview-panel" style="display: {{ overviewDisplay }};">
+    <view class="content overview-panel" ink:if="{{ isOverview }}">
       <text class="headline">{{ verdict }}</text>
       <text class="body">{{ observationMetaLine }}</text>
       <view class="target-row">
@@ -2544,7 +2558,7 @@ export default {
       </view>
     </view>
 
-    <view class="content detail-panel" style="display: {{ detailDisplay }};">
+    <view class="content detail-panel" ink:if="{{ isDetail }}">
       <view class="detail-layout">
         <view class="detail-left">
           <text class="kicker">{{ selectedObject.type }}</text>
@@ -2571,7 +2585,7 @@ export default {
       </view>
     </view>
 
-    <view class="content locate-panel" style="display: {{ locateDisplay }};">
+    <view class="content locate-panel" ink:if="{{ isLocate }}">
       <text class="headline">朝 {{ selectedObject.direction }} 看</text>
       <text class="body">{{ selectedObject.locate }}</text>
       <view class="button-grid compact">
@@ -2580,7 +2594,7 @@ export default {
       </view>
     </view>
 
-    <view class="content error-panel" style="display: {{ errorDisplay }};">
+    <view class="content error-panel" ink:if="{{ isError }}">
       <text class="headline">暂时查不到实时数据</text>
       <text class="body">可以先按一般情况看月亮、亮星和行星。</text>
       <view class="button-grid compact">
@@ -5017,17 +5031,23 @@ export default {
 
 .overview-panel .headline {
   max-width: 210px;
+  height: 42px;
   max-height: 42px;
+  overflow: hidden;
   font-size: 18px;
   line-height: 21px;
+  word-break: break-all;
 }
 
 .overview-panel .body {
   max-width: 206px;
+  height: 30px;
   max-height: 30px;
+  overflow: hidden;
   margin-top: 5px;
   font-size: 10px;
   line-height: 15px;
+  word-break: break-all;
 }
 
 .overview-panel .target-row {
@@ -5035,6 +5055,8 @@ export default {
   flex-direction: column;
   gap: 3px;
   margin-top: 7px;
+  height: 122px;
+  overflow: hidden;
 }
 
 .overview-panel .target-btn,
