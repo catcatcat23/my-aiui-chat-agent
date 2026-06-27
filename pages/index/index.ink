@@ -32,7 +32,7 @@
 </script>
 
 <script setup>
-const BUILD_VERSION = 'v14.0.5-speech-asr.1'
+const BUILD_VERSION = 'v14.0.6-device-asr.1'
 const SKY_CHART_ENDPOINT = 'https://sky.eunoia.top/sky/chart'
 const GEOCODING_ENDPOINT = 'https://geocoding-api.open-meteo.com/v1/search'
 const HUD_TARGET_SLOT_COUNT = 5
@@ -1688,7 +1688,12 @@ export default {
 
     if (isGlobalHook) {
       if (event && event.preventDefault) event.preventDefault()
-      this.queueDelayedActivation('globalHook')
+      if (this.data.mode === 'overview') {
+        this.queueDelayedActivation('globalHook')
+      } else {
+        this.clearPendingConfirm()
+        this.activateSelection()
+      }
       return
     }
 
@@ -3454,7 +3459,10 @@ export default {
 }
 
 .btn {
-  display: block;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
   min-width: 70px;
   height: 34px;
   box-sizing: border-box;
@@ -3465,7 +3473,7 @@ export default {
   border: 1px solid var(--green-42);
   border-radius: 10px;
   font-size: 12px;
-  line-height: 32px;
+  line-height: 14px;
   font-weight: 900;
   text-align: center;
   white-space: nowrap;
