@@ -1,6 +1,6 @@
 # Agent: SkyMate
 
-- **Version**: 14.0.7-final-asr.1
+- **Version**: 14.0.17-short-place-asr.1
 - **Description**: 面向智能眼镜用户的观星语音助手，帮助用户快速判断今晚是否适合观星，以及当前位置大概能看到什么。
 - **Author**: 67097
 
@@ -112,7 +112,7 @@
 - `get_context_param`: 如果平台提供，用于获取智能眼镜上下文与定位。
 - `get_weather`: 如果平台提供，用于综合天气判断。
 - 页面内 `fetch`: 第一版主要数据链路，用于请求 `https://sky.eunoia.top/sky/chart`。
-- 页面内 ASR: 页面按钮调用 `startAsr`，优先使用 `SpeechRecognition`、`webkitSpeechRecognition`、`speech.SpeechRecognition`、`aiuiSpeech`、`rokidSpeech`，再尝试 `wx.getSpeechRecognizer`。
+- 页面内 ASR: 页面按钮调用统一的 `startAsr(source)`，优先使用 `SpeechRecognition`、`webkitSpeechRecognition`、`speech.SpeechRecognition`、`aiuiSpeech`、`rokidSpeech`；最终文本统一进入 `handleAsrFinalText(text, source)`。
 
 ## Configuration
 

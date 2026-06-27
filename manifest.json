@@ -1,7 +1,7 @@
 {
   "name": "skymate-aiui-agent",
   "displayName": "SkyMate",
-  "version": "14.0.7-final-asr.1",
+  "version": "14.0.17-short-place-asr.1",
   "entry": "pages/index/index",
   "pages": [
     "pages/index/index"

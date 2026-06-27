@@ -1,8 +1,8 @@
 {
   "name": "skymate-aiui-agent",
   "displayName": "SkyMate",
-  "version": "14.0.7-final-asr.1",
-  "description": "SkyMate ASR diagnostics build",
+  "version": "14.0.17-short-place-asr.1",
+  "description": "SkyMate early ASR with full debug logs",
   "pages": [
     "pages/index/index"
   ],

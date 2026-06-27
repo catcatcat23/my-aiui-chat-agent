@@ -32,7 +32,7 @@
 </script>
 
 <script setup>
-const BUILD_VERSION = 'v14.0.7-final-asr.1'
+const BUILD_VERSION = 'v14.0.17-short-place-asr.1'
 const SKY_CHART_ENDPOINT = 'https://sky.eunoia.top/sky/chart'
 const GEOCODING_ENDPOINT = 'https://geocoding-api.open-meteo.com/v1/search'
 const HUD_TARGET_SLOT_COUNT = 5
@@ -66,6 +66,8 @@ const CITY_COORDS = [
   { name: '太仓', aliases: ['太仓', 'taicang', 'tai cang'], lat: 31.4839, lon: 121.15824 },
   { name: '厦门', aliases: ['厦门', '廈門', 'xiamen', 'xia men'], lat: 24.4798, lon: 118.0894 },
   { name: '福州', aliases: ['福州', '福州市', 'fuzhou', 'fu zhou'], lat: 26.0745, lon: 119.2965 },
+  { name: '贵州', aliases: ['贵州', '贵州省', 'guizhou', 'gui zhou'], lat: 26.8154, lon: 106.8748 },
+  { name: '贵阳', aliases: ['贵阳', '贵阳市', 'guiyang', 'gui yang'], lat: 26.6470, lon: 106.6302 },
   { name: '海南', aliases: ['海南', '海南省', 'hainan'], lat: 19.1959, lon: 109.7453 },
   { name: '上海', aliases: ['上海', 'shanghai', 'shang hai'], lat: 31.2304, lon: 121.4737 },
   { name: '杭州', aliases: ['杭州', 'hangzhou', 'hang zhou'], lat: 30.2741, lon: 120.1551 },
@@ -730,12 +732,14 @@ const ASR_SHORT_QUERY_WORDS = [
   '月亮', '月球', '火星', '木星', '金星', '土星', '水星',
   '太阳', '星星', '星图', '观星', '猎户座', '北斗', '银河',
   '苏州', '太仓', '厦门', '福州', '海南', '上海', '杭州', '南京',
-  '北京', '长沙', '广州', '深圳', '成都', '重庆', '武汉', '西安'
+  '北京', '长沙', '广州', '深圳', '成都', '重庆', '武汉', '西安',
+  '贵州', '贵阳', '青海', '甘肃', '云南', '昆明', '西藏', '拉萨'
 ]
 
 function isAllowedShortAsrQuery(value) {
   const normalized = text(value, '').replace(/[，。！？、,.!?\s]/g, '')
   if (normalized.length >= 3) return true
+  if (cityFromText(normalized) || isLikelyLocationCandidate(normalized)) return true
   return ASR_SHORT_QUERY_WORDS.indexOf(normalized) >= 0
 }
 
@@ -770,18 +774,6 @@ function extractSpeechRecognitionParts(event) {
     interimText,
     displayText: `${finalText}${interimText}`,
     hasResultFlags
-  }
-}
-
-function asrStartOptions() {
-  return {
-    lang: 'zh-CN',
-    continuous: false,
-    interimResults: true,
-    timeout: ASR_MAX_LISTEN_MS,
-    maxDuration: ASR_MAX_LISTEN_MS,
-    vadTimeout: ASR_SILENCE_SUBMIT_MS,
-    endSilenceTimeout: ASR_SILENCE_SUBMIT_MS
   }
 }
 
@@ -926,27 +918,6 @@ function createDetailLocate(target) {
   return displayText(text(object.locate, `朝${text(object.direction, '开阔天空')}方向寻找较亮、稳定的光点。`), 40)
 }
 
-function extractTranscriptFromEvent(event) {
-  const result = event || {}
-  const direct = result.transcript || result.text || result.result
-  if (direct) return direct
-
-  const results = result.results
-  if (!results || typeof results.length !== 'number') return ''
-  const parts = []
-  for (let index = 0; index < results.length; index += 1) {
-    const item = results[index]
-    const value = text(
-      (item && item.transcript) ||
-      (item && item[0] && item[0].transcript) ||
-      '',
-      ''
-    ).trim()
-    if (value) parts.push(value)
-  }
-  return parts.join('')
-}
-
 function getLanguageModelCandidate(root) {
   const runtime = root || getRuntimeRoot()
   return runtime.LanguageModel || null
@@ -987,6 +958,70 @@ function extractLocationQuery(input) {
   return value || text(input, '').trim()
 }
 
+function cleanLocationCandidate(value) {
+  return text(value, '')
+    .replace(/["'“”‘’`]/g, '')
+    .replace(/[，。！？,.!?；;：:]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isRejectedLocationCandidate(value) {
+  const q = compactIntentText(value)
+  if (!q) return true
+  if (isCurrentLocationIntent(q)) return true
+  if (/^(我|你|它|这个|那个|这里|那里|附近|当前位置|我的位置)$/.test(q)) return true
+  if (/^(返回|退出|开始|定位|刷新|重试|继续|换一个|下一个|上一个|另一个|你好|谢谢|好的|可以|不行|不是|是的|对|嗯|啊)$/.test(q)) return true
+  if (hasAstronomyKeyword(q)) return true
+  if (hasNonLocationQuestionCue(q)) return true
+  return false
+}
+
+function isLikelyLocationCandidate(value) {
+  const raw = cleanLocationCandidate(value)
+  const q = compactIntentText(raw)
+  if (!q || isRejectedLocationCandidate(q)) return false
+  if (/^[\u4e00-\u9fa5]{2,12}$/.test(q)) {
+    return q.length <= 8 || /[省市县区州岛镇村旗盟]$/.test(q)
+  }
+  return /^[A-Za-z][A-Za-z\s.'-]{1,39}$/.test(raw)
+}
+
+function uniqueLocationCandidates(values) {
+  const list = []
+  const seen = {}
+  ;(Array.isArray(values) ? values : []).forEach(value => {
+    const candidate = cleanLocationCandidate(value)
+    const key = compactIntentText(candidate).toLowerCase()
+    if (!candidate || seen[key]) return
+    seen[key] = true
+    list.push(candidate)
+  })
+  return list
+}
+
+function extractLocationNameWithRules(input) {
+  const raw = text(input, '').trim()
+  if (!raw || coordinateFromText(raw)) return ''
+
+  const city = cityFromText(raw)
+  if (city) return city.name
+
+  const candidates = uniqueLocationCandidates([
+    roughNamedLocationCandidate(raw),
+    extractLocationQuery(raw),
+    raw
+  ])
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index]
+    const localCity = cityFromText(candidate)
+    if (localCity) return localCity.name
+    if (isLikelyLocationCandidate(candidate)) return candidate
+  }
+  return ''
+}
+
 function geocodingUrl(locationName) {
   const query = text(locationName, '').trim()
   if (!query) return ''
@@ -1021,12 +1056,14 @@ function placeFromGeocodingResult(result, fallbackName) {
 
 function createLocationNameExtractPrompt(input) {
   return [
-    '请从用户输入中抽取一个最可能的城市名，用于地理编码接口查询。',
+    '请从用户输入中抽取一个最可能的地点名，用于地理编码接口查询。',
     '只返回 JSON，不要解释，不要 Markdown。',
-    '格式：{"location":"城市名","confidence":0到1}',
-    '如果没有明确城市，返回 {"location":"","confidence":0}。',
-    '如果用户提到区县、景点、地标，但城市很明确，优先返回城市名。',
+    '格式：{"location":"地点名","confidence":0到1}',
+    '地点可以是城市、省份、区县、景点或地标。',
+    '如果没有明确地点，返回 {"location":"","confidence":0}。',
+    '如果用户提到区县、景点、地标，但上级城市很明确，优先返回更适合地理编码的地点名。',
     '示例：输入“给我长沙的星图”，输出 {"location":"长沙","confidence":0.95}',
+    '示例：输入“贵州今晚能看到什么”，输出 {"location":"贵州","confidence":0.95}',
     `用户输入：${text(input, '')}`
   ].join('\n')
 }
@@ -1703,7 +1740,8 @@ export default {
     if (isGlobalHook) {
       if (event && event.preventDefault) event.preventDefault()
       if (this.data.mode === 'overview') {
-        this.queueDelayedActivation('globalHook')
+        this.clearPendingConfirm()
+        this.reportEvent('overview-globalhook-ignored')
       } else {
         this.clearPendingConfirm()
         this.activateSelection()
@@ -1908,40 +1946,88 @@ export default {
     this.activeAsrHasFinalText = false
     this.activeAsrSubmitOptions = null
 
-    if (options.detail) {
-      this.handleConversationInput(value || '我该怎么找？', 'voice')
+    this.handleAsrFinalText(value, options.source || (options.detail ? 'detail' : 'home'), reason)
+  },
+
+  resolveAsrSource(source) {
+    if (source === 'detail') return 'detail'
+    if (this.data.mode === 'detail') return 'detail'
+    return 'home'
+  },
+
+  handleAsrFinalText(value, source, reason) {
+    const asrSource = this.resolveAsrSource(source)
+    const finalText = text(value, '').trim()
+    this.reportEvent(`asrFinal:${asrSource}:${reason || 'window'}`)
+
+    if (asrSource === 'detail') {
+      if (finalText) {
+        this.handleConversationInput(finalText, 'voice-detail')
+        return
+      }
+      this.setData({
+        detailAgentStatus: 'ready',
+        detailQuestion: '这次没有听清',
+        detailAnswer: '请重新开始对话并说完整问题。',
+        assistantLine: '这次没有听清，请重新聆听。'
+      })
       return
     }
 
-    if (value) this.handleConversationInput(value, 'voice')
+    if (finalText) this.handleConversationInput(finalText, 'voice')
     else this.setData({ assistantLine: '这次没有听清，请重新聆听。' })
   },
 
-  startUnifiedAsr() {
-    this.reportEvent('startUnifiedAsr')
-    this.startAsr()
+  startUnifiedAsr(source) {
+    const asrSource = this.resolveAsrSource(source)
+    this.reportEvent(`startUnifiedAsr:${asrSource}`)
+    this.startAsr(asrSource)
   },
 
-  startAsr() {
-    this.reportEvent('startAsr')
+  startAsr(source) {
+    const asrSource = this.resolveAsrSource(source)
+    const isDetail = asrSource === 'detail'
+    this.reportEvent(`startAsr:${asrSource}`)
     this.beginAsrWindow({
-      successStatus: 'success',
-      emptyStatus: 'empty'
+      source: asrSource,
+      detail: isDetail,
+      successStatus: isDetail ? 'detail-success' : 'success',
+      emptyStatus: isDetail ? 'detail-empty' : 'empty'
     })
-    this.applyMode('chat')
-    this.setData({
-      asrStatus: 'listening',
-      assistantLine: '我在听，可以说城市名或观测问题。'
-    })
+    if (isDetail) {
+      this.applyMode('detail')
+      this.setData({
+        asrStatus: 'detail-listening',
+        detailAgentStatus: 'listening',
+        detailQuestion: '正在听...',
+        detailAnswer: '说出你想问的问题，比如“我该怎么找它？”',
+        assistantLine: '我在听，可以继续追问当前星体。'
+      })
+    } else {
+      this.applyMode('chat')
+      this.setData({
+        asrStatus: 'listening',
+        assistantLine: '我在听，可以说城市名或观测问题。'
+      })
+    }
 
     const Recognition = getSpeechRecognitionCandidate()
     if (!Recognition) {
-      if (this.startWxAsr()) return
       this.clearAsrWindow({ stop: true })
-      this.setData({
-        asrStatus: 'unavailable',
-        assistantLine: '当前环境没有 ASR，请说城市名。'
-      })
+      if (isDetail) {
+        this.setData({
+          asrStatus: 'detail-unavailable',
+          detailAgentStatus: 'ready',
+          detailQuestion: '当前环境没有 ASR',
+          detailAnswer: '请检查语音权限后重试。',
+          assistantLine: '当前环境没有 ASR，请检查语音权限。'
+        })
+      } else {
+        this.setData({
+          asrStatus: 'unavailable',
+          assistantLine: '当前环境没有 ASR，请说城市名。'
+        })
+      }
       return
     }
 
@@ -1958,293 +2044,96 @@ export default {
       this.activeAsrInterimText = parts.interimText
       if (parts.finalText || (!parts.hasResultFlags && displayValue)) {
         buffered = this.recordAsrResult(parts.finalText || displayValue, {
-          successStatus: 'success',
-          emptyStatus: 'empty',
+          source: asrSource,
+          detail: isDetail,
+          successStatus: isDetail ? 'detail-success' : 'success',
+          emptyStatus: isDetail ? 'detail-empty' : 'empty',
           isFinal: !!parts.finalText,
           unflaggedResult: !parts.hasResultFlags
         })
       }
-      console.log('[SkyMate] ASR result', parts, { buffered, event: event || {} })
-      this.setData({
-        asrStatus: displayValue ? 'listening' : 'empty',
-        assistantLine: displayValue ? asrTranscriptLine(displayValue) : '我在听，请继续说完整问题。'
-      })
+      console.log('[SkyMate] ASR result', asrSource, parts, { buffered, event: event || {} })
+      if (isDetail) {
+        this.setData({
+          asrStatus: displayValue ? 'detail-listening' : 'detail-empty',
+          detailQuestion: displayValue ? asrQuestionLine(displayValue) : '正在听...'
+        })
+      } else {
+        this.setData({
+          asrStatus: displayValue ? 'listening' : 'empty',
+          assistantLine: displayValue ? asrTranscriptLine(displayValue) : '我在听，请继续说完整问题。'
+        })
+      }
     }
 
     recognition.onerror = (event) => {
       if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
-      console.log('[SkyMate] ASR error', event || {})
+      console.log('[SkyMate] ASR error', asrSource, event || {})
+      if (this.activeAsrLatestText) {
+        this.submitAsrWindow('error-result')
+        return
+      }
       this.clearAsrWindow({ stop: true })
-      this.setData({
-        asrStatus: speechErrorStatus('speech-error', event),
-        diagnosticLine: speechErrorDetail(event),
-        assistantLine: '这次语音没有成功，可以重试或直接说城市名。'
-      })
+      if (isDetail) {
+        this.setData({
+          asrStatus: speechErrorStatus('detail-speech-error', event),
+          detailAgentStatus: 'ready',
+          diagnosticLine: speechErrorDetail(event),
+          detailQuestion: '语音没有成功',
+          detailAnswer: '请重新开始对话并说完整问题。',
+          assistantLine: '这次语音没有成功，可以重试。'
+        })
+      } else {
+        this.setData({
+          asrStatus: speechErrorStatus('speech-error', event),
+          diagnosticLine: speechErrorDetail(event),
+          assistantLine: '这次语音没有成功，可以重试或直接说城市名。'
+        })
+      }
     }
 
     recognition.onend = () => {
-      console.log('[SkyMate] ASR end')
+      console.log('[SkyMate] ASR end', asrSource)
       if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
       if (this.activeAsrSubmitted) return
       if (this.activeAsrHasFinalText) {
         this.submitAsrWindow('end-final')
         return
       }
-      this.setData({
-        asrStatus: 'ended',
-        assistantLine: this.activeAsrInterimText ? '语音提前结束，请重新说完整问题。' : '没有听到完整内容，请重试。'
-      })
+      if (isDetail) {
+        this.setData({
+          asrStatus: 'detail-ended',
+          detailQuestion: this.activeAsrInterimText ? '语音提前结束' : '没有听到完整内容',
+          detailAnswer: '请重新开始对话并说完整问题。'
+        })
+      } else {
+        this.setData({
+          asrStatus: 'ended',
+          assistantLine: this.activeAsrInterimText ? '语音提前结束，请重新说完整问题。' : '没有听到完整内容，请重试。'
+        })
+      }
       this.clearAsrWindow({ stop: false })
     }
     try {
       recognition.start()
     } catch (error) {
-      console.log('[SkyMate] ASR start failed', error || {})
+      console.log('[SkyMate] ASR start failed', asrSource, error || {})
       this.clearAsrWindow({ stop: true })
-      this.setData({ asrStatus: 'start-error', assistantLine: '无法启动语音识别，请检查权限后重试。' })
-    }
-  },
-
-  startWxAsr() {
-    const runtime = typeof wx !== 'undefined' ? wx : null
-    if (!runtime || typeof runtime.getSpeechRecognizer !== 'function') return false
-
-    try {
-      const recognizer = runtime.getSpeechRecognizer()
-      if (!recognizer) return false
-
-      this.setData({
-        asrStatus: 'wx-listening',
-        assistantLine: '正在调用 Rokid 语音识别。'
-      })
-      this.activeAsrRecognizer = recognizer
-      const recognitionToken = this.activeAsrSubmitToken
-
-      const onResult = (event) => {
-        if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
-        const transcript = text(extractTranscriptFromEvent(event), '').trim()
-        const buffered = this.recordAsrResult(transcript, {
-          successStatus: 'wx-success',
-          emptyStatus: 'wx-empty',
-          unflaggedResult: true
-        })
-        console.log('[SkyMate] wx ASR result', transcript, { buffered, event: event || {} })
+      if (isDetail) {
         this.setData({
-          asrStatus: buffered ? 'wx-listening' : 'wx-empty',
-          assistantLine: buffered ? asrTranscriptLine(buffered) : '我在听，请继续说完整问题。'
+          asrStatus: 'detail-start-error',
+          detailQuestion: '无法启动语音',
+          detailAnswer: '请检查麦克风权限后重试。'
         })
+      } else {
+        this.setData({ asrStatus: 'start-error', assistantLine: '无法启动语音识别，请检查权限后重试。' })
       }
-
-      const onError = (error) => {
-        if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
-        console.log('[SkyMate] wx ASR error', error || {})
-        this.clearAsrWindow({ stop: true })
-        this.setData({
-          asrStatus: 'wx-error',
-          assistantLine: 'Rokid 语音识别没有成功，可以重试或直接说城市名。'
-        })
-      }
-
-      if (typeof recognizer.onResult === 'function') recognizer.onResult(onResult)
-      else recognizer.onresult = onResult
-
-      if (typeof recognizer.onError === 'function') recognizer.onError(onError)
-      else recognizer.onerror = onError
-
-      const onEnd = () => {
-        console.log('[SkyMate] wx ASR end')
-        if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken || this.activeAsrSubmitted) return
-        if (this.activeAsrLatestText) this.submitAsrWindow('wx-end')
-        else this.clearAsrWindow({ stop: false })
-      }
-      if (typeof recognizer.onEnd === 'function') recognizer.onEnd(onEnd)
-      else recognizer.onend = onEnd
-
-      if (typeof recognizer.start === 'function') {
-        recognizer.start(asrStartOptions())
-        return true
-      }
-
-      if (typeof recognizer.startRecognition === 'function') {
-        recognizer.startRecognition(asrStartOptions())
-        return true
-      }
-    } catch (error) {
-      console.log('[SkyMate] wx ASR setup failed', error || {})
     }
-    return false
   },
 
   startDetailAsr() {
     this.reportEvent('startDetailAsr')
-    this.beginAsrWindow({
-      detail: true,
-      successStatus: 'detail-success',
-      emptyStatus: 'detail-empty'
-    })
-    this.applyMode('detail')
-    this.setData({
-      asrStatus: 'detail-listening',
-      detailAgentStatus: 'listening',
-      detailQuestion: '正在听...',
-      detailAnswer: '说出你想问的问题，比如“我该怎么找它？”',
-      assistantLine: '我在听，可以继续追问当前星体。'
-    })
-
-    const Recognition = getSpeechRecognitionCandidate()
-    if (!Recognition) {
-      if (this.startWxDetailAsr()) return
-      this.clearAsrWindow({ stop: true })
-      this.handleConversationInput('我该怎么找？', 'voice')
-      return
-    }
-
-    const recognition = new Recognition()
-    configureSpeechRecognition(recognition)
-    this.activeAsrRecognizer = recognition
-    const recognitionToken = this.activeAsrSubmitToken
-
-    recognition.onresult = (event) => {
-      if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
-      const parts = extractSpeechRecognitionParts(event)
-      const displayValue = text(parts.displayText, '').trim()
-      let buffered = this.activeAsrLatestText
-      this.activeAsrInterimText = parts.interimText
-      if (parts.finalText || (!parts.hasResultFlags && displayValue)) {
-        buffered = this.recordAsrResult(parts.finalText || displayValue, {
-          detail: true,
-          successStatus: 'detail-success',
-          emptyStatus: 'detail-empty',
-          isFinal: !!parts.finalText,
-          unflaggedResult: !parts.hasResultFlags
-        })
-      }
-      console.log('[SkyMate] detail ASR result', parts, { buffered, event: event || {} })
-      this.setData({
-        asrStatus: displayValue ? 'detail-listening' : 'detail-empty',
-        detailQuestion: displayValue ? asrQuestionLine(displayValue) : '正在听...'
-      })
-    }
-
-    recognition.onerror = (event) => {
-      if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
-      console.log('[SkyMate] detail ASR error', event || {})
-      this.clearAsrWindow({ stop: true })
-      const target = this.data.selectedObject || FALLBACK_TARGETS[0]
-      this.setData({
-        asrStatus: speechErrorStatus('detail-speech-error', event),
-        detailAgentStatus: 'local',
-        detailObjectContext: createDetailObjectContext(target, this.data),
-        diagnosticLine: speechErrorDetail(event),
-        detailQuestion: '语音没有成功',
-        detailAnswer: detailGuideAnswer(target, '我该怎么找？'),
-        assistantLine: '语音没有成功，我先按当前星体给出找法。'
-      })
-    }
-
-    recognition.onend = () => {
-      console.log('[SkyMate] detail ASR end')
-      if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
-      if (this.activeAsrSubmitted) return
-      if (this.activeAsrHasFinalText) {
-        this.submitAsrWindow('end-final')
-        return
-      }
-      this.setData({
-        asrStatus: 'detail-ended',
-        detailQuestion: '语音提前结束',
-        detailAnswer: '请重新开始对话并说完整问题。'
-      })
-      this.clearAsrWindow({ stop: false })
-    }
-    try {
-      recognition.start()
-    } catch (error) {
-      console.log('[SkyMate] detail ASR start failed', error || {})
-      this.clearAsrWindow({ stop: true })
-      this.setData({
-        asrStatus: 'detail-start-error',
-        detailQuestion: '无法启动语音',
-        detailAnswer: '请检查麦克风权限后重试。'
-      })
-    }
-  },
-
-  startWxDetailAsr() {
-    const runtime = typeof wx !== 'undefined' ? wx : null
-    if (!runtime || typeof runtime.getSpeechRecognizer !== 'function') return false
-
-    try {
-      const recognizer = runtime.getSpeechRecognizer()
-      if (!recognizer) return false
-
-      const target = this.data.selectedObject || FALLBACK_TARGETS[0]
-      this.setData({
-        asrStatus: 'detail-wx-listening',
-        detailAgentStatus: 'listening',
-        detailObjectContext: createDetailObjectContext(target, this.data),
-        assistantLine: `正在听你问 ${text(target.name, '这个目标')}。`
-      })
-      this.activeAsrRecognizer = recognizer
-      const recognitionToken = this.activeAsrSubmitToken
-
-      const onResult = (event) => {
-        if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
-        const transcript = text(extractTranscriptFromEvent(event), '').trim()
-        const buffered = this.recordAsrResult(transcript, {
-          detail: true,
-          successStatus: 'detail-wx-success',
-          emptyStatus: 'detail-wx-empty',
-          unflaggedResult: true
-        })
-        console.log('[SkyMate] wx detail ASR result', transcript, { buffered, event: event || {} })
-        this.setData({
-          asrStatus: buffered ? 'detail-wx-listening' : 'detail-wx-empty',
-          detailQuestion: buffered ? asrQuestionLine(buffered) : '正在听...'
-        })
-      }
-
-      const onError = (error) => {
-        if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
-        console.log('[SkyMate] wx detail ASR error', error || {})
-        this.clearAsrWindow({ stop: true })
-        this.setData({
-          asrStatus: 'detail-wx-error',
-          detailAgentStatus: 'local',
-          detailQuestion: '语音没有成功',
-          detailAnswer: detailGuideAnswer(target, '我该怎么找？'),
-          assistantLine: '语音没有成功，我先按当前星体给出找法。'
-        })
-      }
-
-      if (typeof recognizer.onResult === 'function') recognizer.onResult(onResult)
-      else recognizer.onresult = onResult
-
-      if (typeof recognizer.onError === 'function') recognizer.onError(onError)
-      else recognizer.onerror = onError
-
-      const onEnd = () => {
-        console.log('[SkyMate] wx detail ASR end')
-        if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken || this.activeAsrSubmitted) return
-        if (this.activeAsrLatestText) this.submitAsrWindow('wx-detail-end')
-        else this.clearAsrWindow({ stop: false })
-      }
-      if (typeof recognizer.onEnd === 'function') recognizer.onEnd(onEnd)
-      else recognizer.onend = onEnd
-
-      if (typeof recognizer.start === 'function') {
-        recognizer.start(asrStartOptions())
-        return true
-      }
-
-      if (typeof recognizer.startRecognition === 'function') {
-        recognizer.startRecognition(asrStartOptions())
-        return true
-      }
-    } catch (error) {
-      console.log('[SkyMate] wx detail ASR setup failed', error || {})
-    }
-    return false
+    this.startAsr('detail')
   },
 
   async getDetailAgentSession() {
@@ -2571,6 +2460,19 @@ export default {
     }
 
     const locationToken = this.locationRequestToken
+    const ruleLocationName = extractLocationNameWithRules(input)
+    if (ruleLocationName) {
+      const geocodedPlace = await this.resolveLocationWithOnlineGeocoder(ruleLocationName, locationToken)
+      if (geocodedPlace) {
+        return {
+          place: geocodedPlace,
+          namedLocationRequested: true,
+          query: ruleLocationName,
+          stage: 'geocode-rule'
+        }
+      }
+    }
+
     const extractedLocationName = await this.extractLocationNameWithModel(input, locationToken)
     if (extractedLocationName) {
       if (!this.pageActive || locationToken !== this.locationRequestToken) {
@@ -2585,10 +2487,25 @@ export default {
       }
     }
 
+    const fallbackLocationName = namedLocationRequested ? uniqueLocationCandidates([
+      roughNamedLocationCandidate(input),
+      extractLocationQuery(input),
+      text(input, '').trim()
+    ]).find(candidate => candidate !== ruleLocationName) || '' : ''
+    if (fallbackLocationName) {
+      const geocodedPlace = await this.resolveLocationWithOnlineGeocoder(fallbackLocationName, locationToken)
+      return {
+        place: geocodedPlace,
+        namedLocationRequested: true,
+        query: fallbackLocationName,
+        stage: geocodedPlace ? 'geocode-fallback' : 'geocode-fallback-failed'
+      }
+    }
+
     return {
       place: null,
       namedLocationRequested,
-      query: namedLocationRequested ? roughNamedLocationCandidate(input) || text(input, '').trim() : '',
+      query: fallbackLocationName,
       stage: 'unresolved'
     }
   },
@@ -2708,7 +2625,7 @@ export default {
     this.setData({
       requestStatus: 'extract location',
       diagnosticLine: shortText(query, 62),
-      assistantLine: '正在从问题中提取城市。'
+      assistantLine: '正在从问题中提取地点。'
     })
 
     let session = null
@@ -2738,7 +2655,7 @@ export default {
       this.setData({
         requestStatus: 'location extracted',
         diagnosticLine: shortText(locationName, 62),
-        assistantLine: `已提取城市：${locationName}，正在联网查询坐标。`
+        assistantLine: `已提取地点：${locationName}，正在联网查询坐标。`
       })
       return locationName
     } catch (error) {
@@ -3110,7 +3027,8 @@ export default {
     if (event && event.stopPropagation) event.stopPropagation()
     if (event && event.preventDefault) event.preventDefault()
     if (this.data.mode !== 'overview') return
-    this.queueDelayedActivation('overviewPress')
+    this.clearPendingConfirm()
+    this.reportEvent('overview-touch-ignored')
   },
 
   restoreOverviewState() {
