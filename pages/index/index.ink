@@ -32,7 +32,7 @@
 </script>
 
 <script setup>
-const BUILD_VERSION = 'v14.0.4-wx-asr.1'
+const BUILD_VERSION = 'v14.0.5-speech-asr.1'
 const SKY_CHART_ENDPOINT = 'https://sky.eunoia.top/sky/chart'
 const GEOCODING_ENDPOINT = 'https://geocoding-api.open-meteo.com/v1/search'
 const HUD_TARGET_SLOT_COUNT = 5
@@ -1911,10 +1911,9 @@ export default {
       assistantLine: '我在听，可以说城市名或观测问题。'
     })
 
-    if (this.startWxAsr()) return
-
     const Recognition = getSpeechRecognitionCandidate()
     if (!Recognition) {
+      if (this.startWxAsr()) return
       this.clearAsrWindow({ stop: true })
       this.setData({
         asrStatus: 'unavailable',
@@ -2068,10 +2067,9 @@ export default {
       assistantLine: '我在听，可以继续追问当前星体。'
     })
 
-    if (this.startWxDetailAsr()) return
-
     const Recognition = getSpeechRecognitionCandidate()
     if (!Recognition) {
+      if (this.startWxDetailAsr()) return
       this.clearAsrWindow({ stop: true })
       this.handleConversationInput('我该怎么找？', 'voice')
       return

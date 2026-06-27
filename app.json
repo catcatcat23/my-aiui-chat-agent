@@ -1,8 +1,8 @@
 {
   "name": "skymate-aiui-agent",
   "displayName": "SkyMate",
-  "version": "14.0.4-wx-asr.1",
-  "description": "SkyMate robustness build with wx-first ASR navigation",
+  "version": "14.0.5-speech-asr.1",
+  "description": "SkyMate robustness build with SpeechRecognition-first ASR",
   "pages": [
     "pages/index/index"
   ],
