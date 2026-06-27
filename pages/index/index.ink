@@ -1911,9 +1911,10 @@ export default {
       assistantLine: '我在听，可以说城市名或观测问题。'
     })
 
+    if (this.startWxAsr()) return
+
     const Recognition = getSpeechRecognitionCandidate()
     if (!Recognition) {
-      if (this.startWxAsr()) return
       this.clearAsrWindow({ stop: true })
       this.setData({
         asrStatus: 'unavailable',
@@ -2067,9 +2068,10 @@ export default {
       assistantLine: '我在听，可以继续追问当前星体。'
     })
 
+    if (this.startWxDetailAsr()) return
+
     const Recognition = getSpeechRecognitionCandidate()
     if (!Recognition) {
-      if (this.startWxDetailAsr()) return
       this.clearAsrWindow({ stop: true })
       this.handleConversationInput('我该怎么找？', 'voice')
       return
