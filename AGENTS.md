@@ -1,6 +1,6 @@
 # Agent: SkyMate
 
-- **Version**: 0.1.0
+- **Version**: 14.0.3-merged.1
 - **Description**: 面向智能眼镜用户的观星语音助手，帮助用户快速判断今晚是否适合观星，以及当前位置大概能看到什么。
 - **Author**: 67097
 

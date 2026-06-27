@@ -1,4 +1,6 @@
 .tmp-*
+.playwright-cli/
+版本管理/
 *.aix
 node_modules/
 dist/

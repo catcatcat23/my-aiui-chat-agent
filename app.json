@@ -1,8 +1,8 @@
 {
   "name": "skymate-aiui-agent",
   "displayName": "SkyMate",
-  "version": "0.1.0",
-  "description": "SkyMate smart-glasses astronomy assistant",
+  "version": "14.0.3-merged.1",
+  "description": "SkyMate robustness build with hardware-safe list navigation",
   "pages": [
     "pages/index/index"
   ],

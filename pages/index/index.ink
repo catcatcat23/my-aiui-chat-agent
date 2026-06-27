@@ -21,6 +21,7 @@
         "skyChart": { "type": "string", "description": "Raw sky chart JSON string" },
         "selectedObject": { "type": "string", "description": "Selected target key or object JSON" },
         "detailIntro": { "type": "string", "description": "Generated object intro shown on the detail page" },
+        "detailLocate": { "type": "string", "description": "Compact object locating guide shown on the detail page" },
         "detailQuestion": { "type": "string", "description": "Latest user question asked on the object detail page" },
         "detailAnswer": { "type": "string", "description": "Latest SkyMate answer on the object detail page" },
         "detailObjectContext": { "type": "string", "description": "Object-scoped context passed to the detail page agent" }
@@ -31,7 +32,7 @@
 </script>
 
 <script setup>
-const BUILD_VERSION = 'v9-aiui-card'
+const BUILD_VERSION = 'v14.0.3-merged.1'
 const SKY_CHART_ENDPOINT = 'https://sky.eunoia.top/sky/chart'
 const GEOCODING_ENDPOINT = 'https://geocoding-api.open-meteo.com/v1/search'
 const HUD_TARGET_SLOT_COUNT = 5
@@ -49,6 +50,16 @@ const SKY_OPTIONS = {
   include_planets: true,
   include_deep_sky: true
 }
+
+const ASR_TRANSCRIPT_DISPLAY_LIMIT = 22
+const ASR_DETAIL_QUESTION_DISPLAY_LIMIT = 30
+const ASR_MIN_LISTEN_MS = 2600
+const ASR_SILENCE_SUBMIT_MS = 2600
+const ASR_MAX_LISTEN_MS = 10000
+const ASR_SHORT_FINAL_GRACE_MS = 1800
+const MODEL_GENERAL_DISPLAY_LIMIT = 34
+const MODEL_DETAIL_DISPLAY_LIMIT = 72
+const TTS_MAX_CHARS = 96
 
 const CITY_COORDS = [
   { name: '苏州', aliases: ['苏州', 'suzhou', 'su zhou'], lat: 31.2989, lon: 120.5853 },
@@ -68,6 +79,7 @@ const FALLBACK_TARGETS = [
   {
     key: 'vega',
     name: '织女星',
+    displayName: '织女星',
     type: '亮星',
     typeClass: 'star',
     direction: '东北',
@@ -80,6 +92,7 @@ const FALLBACK_TARGETS = [
   {
     key: 'arcturus',
     name: '大角星',
+    displayName: '大角星',
     type: '亮星',
     typeClass: 'star',
     direction: '西方',
@@ -92,6 +105,7 @@ const FALLBACK_TARGETS = [
   {
     key: 'jupiter',
     name: '木星',
+    displayName: '木星',
     type: '行星',
     typeClass: 'planet',
     direction: '开阔天空',
@@ -143,6 +157,36 @@ function shortText(value, maxLength) {
   return valueText.length > limit ? `${valueText.slice(0, limit)}...` : valueText
 }
 
+function displayText(value, maxLength) {
+  const valueText = text(value, '').replace(/\s+/g, ' ').trim()
+  const limit = maxLength || 24
+  return valueText.length > limit ? `${valueText.slice(0, Math.max(1, limit - 1))}…` : valueText
+}
+
+function displayName(value, maxLength) {
+  return displayText(value, maxLength || 10)
+}
+
+function displayMeta(value, maxLength) {
+  return displayText(value, maxLength || 18)
+}
+
+function asrTranscriptLine(value) {
+  return `我听到：${shortText(value, ASR_TRANSCRIPT_DISPLAY_LIMIT)}`
+}
+
+function asrQuestionLine(value) {
+  return `你问：${shortText(value, ASR_DETAIL_QUESTION_DISPLAY_LIMIT)}`
+}
+
+function modelGeneralDisplay(value) {
+  return shortText(value, MODEL_GENERAL_DISPLAY_LIMIT)
+}
+
+function modelDetailDisplay(value) {
+  return shortText(value, MODEL_DETAIL_DISPLAY_LIMIT)
+}
+
 function padTimePart(value) {
   return String(value).padStart(2, '0')
 }
@@ -155,7 +199,7 @@ function formatClockLabel(value) {
 }
 
 function shortLocationLabel(value) {
-  const valueText = text(value, '当前位置').replace(/\s+/g, '')
+  const valueText = text(value, '观测位置').replace(/\s+/g, '')
   return valueText.length > 5 ? `${valueText.slice(0, 5)}...` : valueText
 }
 
@@ -184,10 +228,13 @@ function readChartTimeValue(chart) {
 
 function parseTimeValue(value) {
   if (value instanceof Date) return value.getTime()
-  if (typeof value === 'number') return value
+  if (typeof value === 'number') return value < 100000000000 ? value * 1000 : value
   const raw = text(value, '')
   if (!raw) return NaN
-  if (/^\d+$/.test(raw)) return parseInt(raw, 10)
+  if (/^\d+$/.test(raw)) {
+    const numericTimestamp = parseInt(raw, 10)
+    return numericTimestamp < 100000000000 ? numericTimestamp * 1000 : numericTimestamp
+  }
   const matched = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z)?$/)
   if (matched) {
     return Date.UTC(
@@ -337,6 +384,7 @@ function normalizeTarget(raw, index) {
   return {
     key,
     name,
+    displayName: displayName(name, 10),
     type: typeInfo.label,
     typeClass: typeInfo.className,
     rank: typeInfo.rank,
@@ -442,16 +490,14 @@ function hiddenStyle() {
 function createSelectedSkyOverlay(target, index) {
   if (!target) {
     return {
-      selectedSkyMarkerStyle: hiddenStyle(),
-      selectedSkyLabelStyle: hiddenStyle()
+      selectedSkyMarkerStyle: hiddenStyle()
     }
   }
 
   const point = skyChartPoint(target, index || 0)
   const size = Math.max(skyObjectSize(target) + 2, 8)
   return {
-    selectedSkyMarkerStyle: dotStyle(point, size),
-    selectedSkyLabelStyle: labelStyle(point, size)
+    selectedSkyMarkerStyle: dotStyle(point, size)
   }
 }
 
@@ -494,8 +540,8 @@ function createHudSlots(targets, selectedKey) {
     const selectedClass = selected && target.key === selected.key ? 'selected' : ''
     slots[`target${index}Style`] = dotStyle(point, selectedClass ? 12 : 9)
     slots[`label${index}Style`] = labelStyle(point)
-    slots[`target${index}Name`] = target.name
-    slots[`target${index}Meta`] = `${windowStart + index + 1}/${allTargets.length} · ${target.type} · ${target.direction}`
+    slots[`target${index}Name`] = displayName(target.name, 12)
+    slots[`target${index}Meta`] = displayMeta(`${windowStart + index + 1}/${allTargets.length} · ${target.type} · ${target.direction}`, 20)
     slots[`target${index}Key`] = target.key
     slots[`target${index}Class`] = `${target.typeClass} ${selectedClass}`
   }
@@ -515,8 +561,9 @@ function createSkyChartObjects(objects, selectedKey) {
     const size = skyObjectSize(target)
     return Object.assign({}, target, {
       style: dotStyle(point, size),
-      selectedClass: '',
-      labelStyle: hiddenStyle()
+      selectedClass: target && target.key === selectedKey ? 'selected' : '',
+      labelStyle: hiddenStyle(),
+      mapLabel: displayName(target.name, 7)
     })
   })
 }
@@ -580,7 +627,7 @@ function placeFromQuery(query) {
   const lon = parseFloat(raw.lon || raw.lng || raw.longitude)
   if (isNaN(lat) || isNaN(lon)) return null
   return {
-    name: text(raw.locationName || raw.city || raw.location, '当前位置'),
+    name: text(raw.locationName || raw.city || raw.location, '观测位置'),
     lat,
     lon
   }
@@ -656,9 +703,104 @@ function safeAssignRecognitionOption(recognition, key, value) {
 
 function configureSpeechRecognition(recognition) {
   safeAssignRecognitionOption(recognition, 'lang', 'zh-CN')
-  safeAssignRecognitionOption(recognition, 'continuous', false)
-  safeAssignRecognitionOption(recognition, 'interimResults', false)
+  safeAssignRecognitionOption(recognition, 'continuous', true)
+  safeAssignRecognitionOption(recognition, 'interimResults', true)
   safeAssignRecognitionOption(recognition, 'maxAlternatives', 1)
+}
+
+const ASR_SHORT_QUERY_WORDS = [
+  '月亮', '月球', '火星', '木星', '金星', '土星', '水星',
+  '太阳', '星星', '星图', '观星', '猎户座', '北斗', '银河',
+  '苏州', '太仓', '厦门', '福州', '海南', '上海', '杭州', '南京',
+  '北京', '长沙', '广州', '深圳', '成都', '重庆', '武汉', '西安'
+]
+
+function isAllowedShortAsrQuery(value) {
+  const normalized = text(value, '').replace(/[，。！？、,.!?\s]/g, '')
+  if (normalized.length >= 3) return true
+  return ASR_SHORT_QUERY_WORDS.indexOf(normalized) >= 0
+}
+
+function extractSpeechRecognitionParts(event) {
+  const result = event || {}
+  const results = result.results
+  if (!results || typeof results.length !== 'number') {
+    const direct = text(result.transcript || result.text || result.result, '').trim()
+    return { finalText: direct, interimText: '', displayText: direct, hasResultFlags: false }
+  }
+
+  const finalParts = []
+  const interimParts = []
+  let hasResultFlags = false
+  for (let index = 0; index < results.length; index += 1) {
+    const item = results[index]
+    const transcript = text(
+      (item && item.transcript) ||
+      (item && item[0] && item[0].transcript) ||
+      '',
+      ''
+    ).trim()
+    if (!transcript) continue
+    if (item && typeof item.isFinal === 'boolean') hasResultFlags = true
+    if (item && item.isFinal === true) finalParts.push(transcript)
+    else interimParts.push(transcript)
+  }
+  const finalText = finalParts.join('')
+  const interimText = interimParts.join('')
+  return {
+    finalText,
+    interimText,
+    displayText: `${finalText}${interimText}`,
+    hasResultFlags
+  }
+}
+
+function asrStartOptions() {
+  return {
+    lang: 'zh-CN',
+    continuous: true,
+    interimResults: true,
+    timeout: ASR_MAX_LISTEN_MS,
+    maxDuration: ASR_MAX_LISTEN_MS,
+    vadTimeout: ASR_SILENCE_SUBMIT_MS,
+    endSilenceTimeout: ASR_SILENCE_SUBMIT_MS
+  }
+}
+
+function cleanSpeechText(value) {
+  return text(value, '')
+    .replace(/[*#`_~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, TTS_MAX_CHARS)
+}
+
+function getSpeechSynthesisCandidate(root) {
+  const runtime = root || getRuntimeRoot()
+  const speechModule = runtime.speech || runtime.aiuiSpeech || runtime.rokidSpeech || {}
+  return {
+    synthesis: runtime.speechSynthesis || speechModule.speechSynthesis || speechModule.synthesis || null,
+    Utterance: runtime.SpeechSynthesisUtterance || speechModule.SpeechSynthesisUtterance || speechModule.Utterance || null
+  }
+}
+
+function speakAnswerText(value, owner) {
+  const speechText = cleanSpeechText(value)
+  if (!speechText) return { source: 'empty' }
+  const speech = getSpeechSynthesisCandidate()
+  if (!speech.synthesis || typeof speech.Utterance !== 'function' || typeof speech.synthesis.speak !== 'function') {
+    return { source: 'unavailable' }
+  }
+
+  try {
+    const utterance = new speech.Utterance(speechText)
+    if (owner) owner.activeUtterance = utterance
+    speech.synthesis.speak(utterance, 'immediate')
+    return { source: 'speechSynthesis', method: 'speak', mode: 'immediate' }
+  } catch (error) {
+    console.log('[SkyMate] speechSynthesis failed', error || {})
+    return { source: 'error' }
+  }
 }
 
 function createDetailFacts(target) {
@@ -758,16 +900,33 @@ function createDetailIntro(target) {
   const magnitude = text(object.magnitude, '未知')
   const facts = createDetailFacts(object)
   const base = `${name}是今晚推荐观察的${type}，位于${direction}方向，高度约${altitude}。视觉颜色多为${facts.color}，${facts.size}，亮度${magnitude}。`
-  return shortText(base, 118)
+  return displayText(base, 52)
+}
+
+function createDetailLocate(target) {
+  const object = target || FALLBACK_TARGETS[0]
+  return displayText(text(object.locate, `朝${text(object.direction, '开阔天空')}方向寻找较亮、稳定的光点。`), 40)
 }
 
 function extractTranscriptFromEvent(event) {
   const result = event || {}
-  return result.transcript ||
-    result.text ||
-    result.result ||
-    (result.results && result.results[0] && result.results[0][0] && result.results[0][0].transcript) ||
-    ''
+  const direct = result.transcript || result.text || result.result
+  if (direct) return direct
+
+  const results = result.results
+  if (!results || typeof results.length !== 'number') return ''
+  const parts = []
+  for (let index = 0; index < results.length; index += 1) {
+    const item = results[index]
+    const value = text(
+      (item && item.transcript) ||
+      (item && item[0] && item[0].transcript) ||
+      '',
+      ''
+    ).trim()
+    if (value) parts.push(value)
+  }
+  return parts.join('')
 }
 
 function getLanguageModelCandidate(root) {
@@ -810,16 +969,31 @@ function extractLocationQuery(input) {
   return value || text(input, '').trim()
 }
 
-function geocodingUrl(input) {
-  const query = extractLocationQuery(input)
+function geocodingUrl(locationName) {
+  const query = text(locationName, '').trim()
   if (!query) return ''
-  return `${GEOCODING_ENDPOINT}?name=${encodeURIComponent(query)}&count=1&language=zh&format=json`
+  return `${GEOCODING_ENDPOINT}?name=${encodeURIComponent(query)}&count=5&language=zh&format=json`
 }
 
 function placeFromGeocodingResult(result, fallbackName) {
   const list = result && Array.isArray(result.results) ? result.results : []
   if (!list.length) return null
-  const first = list[0]
+  const query = compactIntentText(fallbackName).toLowerCase()
+  const ranked = list.slice().sort((left, right) => {
+    const score = (item) => {
+      const name = compactIntentText(item && item.name).toLowerCase()
+      const admin = compactIntentText(`${text(item && item.admin1)}${text(item && item.admin2)}`).toLowerCase()
+      let value = 0
+      if (name === query) value += 100
+      else if (name.indexOf(query) >= 0 || query.indexOf(name) >= 0) value += 60
+      if (admin.indexOf(query) >= 0) value += 20
+      if (text(item && item.feature_code).indexOf('PPLA') === 0) value += 8
+      value += Math.min(6, Math.log10(Math.max(1, numeric(item && item.population, 1))))
+      return value
+    }
+    return score(right) - score(left)
+  })
+  const first = ranked[0]
   return normalizeResolvedPlace({
     name: first.name || fallbackName,
     lat: first.latitude,
@@ -827,14 +1001,25 @@ function placeFromGeocodingResult(result, fallbackName) {
   }, fallbackName)
 }
 
-function createLocationResolvePrompt(input) {
+function createLocationNameExtractPrompt(input) {
   return [
-    '请把用户输入里的地点解析成经纬度。',
+    '请从用户输入中抽取一个最可能的城市名，用于地理编码接口查询。',
     '只返回 JSON，不要解释，不要 Markdown。',
-    '格式：{"name":"地点名","lat":数字,"lon":数字,"confidence":0到1}',
-    '如果没有明确地点，返回 {"name":"","lat":null,"lon":null,"confidence":0}',
+    '格式：{"location":"城市名","confidence":0到1}',
+    '如果没有明确城市，返回 {"location":"","confidence":0}。',
+    '如果用户提到区县、景点、地标，但城市很明确，优先返回城市名。',
+    '示例：输入“给我长沙的星图”，输出 {"location":"长沙","confidence":0.95}',
     `用户输入：${text(input, '')}`
   ].join('\n')
+}
+
+function locationNameFromModelAnswer(value) {
+  const parsed = parseModelJson(value) || {}
+  const location = text(parsed.location || parsed.city || parsed.locationName || parsed.name, '').trim()
+  if (!location) return ''
+  const confidence = parseFloat(parsed.confidence)
+  if (Number.isFinite(confidence) && confidence <= 0) return ''
+  return location
 }
 
 function createObjectIndex(objects) {
@@ -882,7 +1067,7 @@ function createSkyKnowledgePromptText(kb, pageData) {
   }).join('\n')
 
   return [
-    `位置：${base.location ? text(base.location.name, '当前位置') : text(data.locationName, '未知')}`,
+    `位置：${base.location ? text(base.location.name, '观测位置') : text(data.locationName, '未知')}`,
     `数据来源：${text(base.source, 'unknown')}`,
     `是否实时可靠：${base.reliable ? '是' : '否'}`,
     `生成时间：${base.generatedAt || '未知'}`,
@@ -941,7 +1126,7 @@ function createDetailObjectContext(target, pageData) {
   const data = pageData || {}
   const rows = [
     `当前页面：SkyMate 星体详情页`,
-    `观测位置：${text(data.locationName, '当前位置未知')}`,
+    `观测位置：${text(data.locationName, '未知')}`,
     `今晚判断：${text(data.verdict, '暂无整体判断')}`,
     `观测条件：${text(data.condition, '暂无观测条件')}`,
     `星体名称：${text(object.name, '未知目标')}`,
@@ -1023,7 +1208,7 @@ function createGeneralChatPrompt(question, pageData) {
     '2. 回答自然、简短，适合语音播报。',
     '3. 如果用户问当前能看到什么、哪个更亮、哪个更容易找，优先参考星图知识库。',
     '4. 如果知识库不可靠，要说明不确定。',
-    '5. 如果问题需要位置但没有位置，请提示用户说城市或授权定位。'
+    '5. 如果问题需要位置但没有位置，请提示用户说城市名。'
   ].join('\n')
 }
 
@@ -1032,16 +1217,171 @@ function isBackIntent(input) {
   return q === '返回' || q === '退出' || q === '回到首页' || q === '回到总览' || q.indexOf('返回上一') >= 0
 }
 
+function compactIntentText(input) {
+  return text(input, '').replace(/\s+/g, '').trim()
+}
+
+function isCurrentLocationIntent(input) {
+  return false
+}
+
+function hasObjectReferenceCue(input) {
+  const q = compactIntentText(input)
+  if (!q) return false
+  return q.indexOf('这个') >= 0 ||
+    q.indexOf('那个') >= 0 ||
+    q.indexOf('它') >= 0 ||
+    q.indexOf('他') >= 0 ||
+    q.indexOf('她') >= 0 ||
+    q.indexOf('这颗') >= 0 ||
+    q.indexOf('那颗') >= 0 ||
+    q.indexOf('当前目标') >= 0 ||
+    q.indexOf('当前星体') >= 0 ||
+    q.indexOf('这个目标') >= 0 ||
+    q.indexOf('这个星体') >= 0 ||
+    q.indexOf('该目标') >= 0 ||
+    q.indexOf('该星体') >= 0
+}
+
+function hasNonLocationQuestionCue(input) {
+  const q = compactIntentText(input)
+  if (!q) return false
+  return hasObjectReferenceCue(q) ||
+    /(什么|怎么|为什么|哪里|哪个|多少|多久|多亮|吗|呢|么|吧|亮吗|亮度|亮|暗|颜色|大小|距离|高度|方向|简介|介绍|找法|寻找|解释|意思|是不是|是否|换一个|下一个|上一个|另一个)/.test(q)
+}
+
+function hasAstronomyKeyword(input) {
+  const q = text(input, '')
+  const words = ['星', '月亮', '月球', '行星', '恒星', '星座', '流星', '银河', '望远镜', '视星等', '观星', '天文', '太阳', '金星', '木星', '火星', '水星', '土星', '天王星', '海王星', '猎户', '北斗', '织女', '牛郎', '北极星']
+  return words.some(word => q.indexOf(word) >= 0)
+}
+
+function roughNamedLocationCandidate(input) {
+  let value = compactIntentText(input)
+  if (!value) return ''
+  value = value
+    .replace(/(请|帮我|给我|帮忙|麻烦|查一下|查查|查询|查|看看|看一下|看|显示|生成|打开|切到|换到|基于|位于|我在|在|到|的)/g, '')
+    .replace(/(今晚|今天|明天|现在|当前|当地|这里|那边|附近|当前位置|我的位置|星图|星空|天空|观星|观测|推荐|列表|结果)/g, '')
+    .replace(/(能不能|能否|可不可以|可以|适合|看到|看见|看得到|能看到|能看|有什么|什么|吗|呢|啊|呀)/g, '')
+    .replace(/(月亮|月球|行星|恒星|星座|流星雨|流星|银河|太阳|金星|木星|火星|水星|土星|天王星|海王星|猎户座|北斗|北极星)/g, '')
+    .replace(/[，。！？,.!?]/g, '')
+    .trim()
+  return value
+}
+
+function isLikelyStandalonePlaceName(input) {
+  const raw = text(input, '').trim()
+  const q = compactIntentText(raw).replace(/[，。！？,.!?]/g, '')
+  if (!q || /[?？]/.test(raw)) return false
+  if (isCurrentLocationIntent(q)) return false
+  if (hasAstronomyKeyword(q)) return false
+  if (hasNonLocationQuestionCue(q)) return false
+  if (/(什么|怎么|为什么|哪里|哪个|能不能|能否|可不可以|可以|适合|看到|看见|看得到|能看到|能看|今晚|今天|明天|现在|当前|这里|那边|附近|本地|当地|使用|用|请|帮我|给我|查|看看|看一下|看|观测|推荐|列表|结果)/.test(q)) return false
+  if (/^(返回|退出|开始|定位|刷新|重试|继续|换一个|下一个|上一个|另一个|你好|谢谢|好的|可以|不行|不是|是的|对|嗯|啊)$/.test(q)) return false
+  if (/^[\u4e00-\u9fa5]{2,12}$/.test(q)) {
+    return q.length <= 8 || /[市县区州省岛镇村]$/.test(q)
+  }
+  return /^[A-Za-z][A-Za-z\s.'-]{1,39}$/.test(raw)
+}
+
+function hasNamedLocationRequest(input) {
+  if (coordinateFromText(input) || cityFromText(input) || isLikelyStandalonePlaceName(input)) return true
+  if (isCurrentLocationIntent(input)) return false
+  const candidate = roughNamedLocationCandidate(input)
+  if (!candidate) return false
+  if (/^(我|你|它|这个|那个|这里|那里)$/.test(candidate)) return false
+  if (hasNonLocationQuestionCue(candidate)) return false
+  if (hasAstronomyKeyword(candidate)) return false
+  if (/^[\u4e00-\u9fa5]{2,12}$/.test(candidate)) {
+    return candidate.length <= 8 || /[市县区州省岛镇村]$/.test(candidate)
+  }
+  return /^[A-Za-z][A-Za-z\s.'-]{1,39}$/.test(candidate)
+}
+
 function isSkyChartIntent(input) {
   const q = text(input, '')
   return q.indexOf('今晚') >= 0 ||
     q.indexOf('今天') >= 0 ||
     q.indexOf('能看到什么') >= 0 ||
+    q.indexOf('能看什么') >= 0 ||
+    q.indexOf('能不能看') >= 0 ||
+    q.indexOf('能否看') >= 0 ||
     q.indexOf('看得到什么') >= 0 ||
+    q.indexOf('看得到') >= 0 ||
+    q.indexOf('看见') >= 0 ||
     q.indexOf('查星空') >= 0 ||
+    q.indexOf('观星') >= 0 ||
+    q.indexOf('观测') >= 0 ||
+    q.indexOf('看一下') >= 0 ||
+    q.indexOf('帮我看看') >= 0 ||
     q.indexOf('星图') >= 0 ||
-    q.indexOf('重新定位') >= 0 ||
-    q.indexOf('刷新') >= 0
+    q.indexOf('刷新') >= 0 ||
+    ((q.indexOf('有什么') >= 0 || q.indexOf('看什么') >= 0) && (q.indexOf('星') >= 0 || q.indexOf('天空') >= 0 || q.indexOf('这里') >= 0 || q.indexOf('今晚') >= 0))
+}
+
+function hasSkyChartActionCue(input) {
+  const q = compactIntentText(input)
+  if (!q) return false
+  return q.indexOf('星图') >= 0 ||
+    q.indexOf('星空') >= 0 ||
+    q.indexOf('观星') >= 0 ||
+    q.indexOf('观测') >= 0 ||
+    q.indexOf('推荐') >= 0 ||
+    q.indexOf('列表') >= 0 ||
+    q.indexOf('刷新') >= 0 ||
+    q.indexOf('查') >= 0 ||
+    q.indexOf('查询') >= 0 ||
+    q.indexOf('换到') >= 0 ||
+    q.indexOf('切到') >= 0 ||
+    q.indexOf('换成') >= 0 ||
+    q.indexOf('改成') >= 0 ||
+    q.indexOf('基于') >= 0 ||
+    q.indexOf('城市') >= 0 ||
+    q.indexOf('地点') >= 0 ||
+    q.indexOf('位置') >= 0 ||
+    q.indexOf('能看到什么') >= 0 ||
+    q.indexOf('能看什么') >= 0 ||
+    q.indexOf('能不能看') >= 0 ||
+    q.indexOf('能否看') >= 0 ||
+    q.indexOf('可不可以看') >= 0 ||
+    q.indexOf('看得到') >= 0 ||
+    q.indexOf('看见') >= 0 ||
+    q.indexOf('有什么') >= 0
+}
+
+function hasSelectedObjectReference(input, context) {
+  const q = compactIntentText(input)
+  if (!q) return false
+  if (hasObjectReferenceCue(q)) return true
+  const selected = context && context.selectedObject
+  const name = compactIntentText(selected && selected.name)
+  const displayName = compactIntentText(selected && selected.displayName)
+  return !!((name && q.indexOf(name) >= 0) || (displayName && q.indexOf(displayName) >= 0))
+}
+
+function isDetailSkyChartQuery(input, context) {
+  const q = compactIntentText(input)
+  if (!q) return false
+  if (q.indexOf('刷新') >= 0) return true
+
+  const objectReferenced = hasSelectedObjectReference(q, context)
+  if (objectReferenced && !hasLocationSignal(q)) return false
+
+  const hasPlace = hasLocationSignal(q) || hasNamedLocationRequest(q)
+  if (hasPlace && hasSkyChartActionCue(q)) return true
+
+  if (!objectReferenced) {
+    return q.indexOf('星图') >= 0 ||
+      q.indexOf('星空') >= 0 ||
+      q.indexOf('观星') >= 0 ||
+      q.indexOf('观测列表') >= 0 ||
+      q.indexOf('推荐列表') >= 0 ||
+      q.indexOf('今晚能看到什么') >= 0 ||
+      q.indexOf('现在能看到什么') >= 0 ||
+      q.indexOf('能看到什么') >= 0
+  }
+
+  return false
 }
 
 function isAstronomyQuestion(input) {
@@ -1093,10 +1433,10 @@ function createLocalGeneralAnswer(question, pageData) {
   }
 
   if (!data.currentPlace && isSkyChartIntent(q)) {
-    return '我还没有拿到你眼镜的当前位置。请告诉我城市，或允许获取当前位置。'
+    return '我还没有观测城市。请告诉我城市名，例如“苏州”或“杭州”。'
   }
 
-  return '可以。我会优先结合当前位置和当前星图回答；如果没有实时数据，我会说明不确定。'
+  return '可以。我会优先结合当前星图回答；如果没有实时数据，我会说明不确定。'
 }
 
 function selectedObjectFromQuery(value, targets) {
@@ -1117,6 +1457,7 @@ function createDetailState(target, pageData, question, answer) {
   return {
     detailObjectContext: createDetailObjectContext(object, pageData),
     detailIntro: createDetailIntro(object),
+    detailLocate: createDetailLocate(object),
     detailQuestion: questionText,
     detailAnswer: answer || detailGuideAnswer(object, question || ''),
     detailAgentStatus: 'ready'
@@ -1130,15 +1471,15 @@ export default {
     pageTag: '待唤醒',
     locationName: '等待位置',
     topMetaLine: '等待更新',
-    observationMetaLine: '基于当前位置 · 等待更新',
+    observationMetaLine: '等待城市 · 等待更新',
     verdict: 'SkyMate 帮你看今晚星空。',
-    condition: '使用当前位置后，我会给出今晚的观星建议。',
-    assistantLine: '点击使用当前位置，开始判断今晚能看到什么。',
+    condition: '说出城市后，我会给出今晚的观星建议。',
+    assistantLine: '可说：今晚苏州能看到什么 / 杭州可以看到金星吗。',
     diagnosticLine: 'ready',
     requestStatus: 'idle',
     asrStatus: 'idle',
     eventStatus: 'waiting',
-    locationLine: '尚未定位',
+    locationLine: '说城市名开始。',
     currentPlace: null,
     skyKnowledgeBase: createSkyKnowledgeBase({}),
     detailChatHistory: [],
@@ -1147,34 +1488,44 @@ export default {
     detailQuestion: '可以问：我该怎么找？',
     detailAnswer: detailGuideAnswer(FALLBACK_TARGETS[0], ''),
     detailIntro: createDetailIntro(FALLBACK_TARGETS[0]),
+    detailLocate: createDetailLocate(FALLBACK_TARGETS[0]),
     detailObjectContext: createDetailObjectContext(FALLBACK_TARGETS[0], null),
     detailAgentStatus: 'ready',
     selectedIndex: 0,
     selectedKey: FALLBACK_TARGETS[0].key,
     selectedObject: FALLBACK_TARGETS[0],
     visibleObjects: FALLBACK_TARGETS,
-    skyObjects: createSkyChartObjects(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key),
-    isHome: true,
-    isChat: false,
-    isLoading: false,
-    isOverview: false,
-    isDetail: false,
-    isLocate: false,
-    isError: false,
-    homeDisplay: 'block',
-    chatDisplay: 'none',
-    loadingDisplay: 'none',
-    overviewDisplay: 'none',
-    detailDisplay: 'none',
-    locateDisplay: 'none',
-    errorDisplay: 'none'
+    rawSkyObjects: FALLBACK_TARGETS,
+    skyObjects: createSkyChartObjects(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key)
   }, createHudSlots(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key), createSelectedSkyOverlay(FALLBACK_TARGETS[0], 0)),
 
   skyKnowledgeRaw: null,
   detailAgentSession: null,
   generalAgentSession: null,
+  skyRequestId: 0,
+  activeUtterance: null,
+  activeAsrRecognizer: null,
+  activeAsrSubmitTimer: null,
+  activeAsrMaxTimer: null,
+  activeAsrSubmitToken: 0,
+  activeAsrStartedAt: 0,
+  activeAsrLastInputAt: 0,
+  activeAsrLatestText: '',
+  activeAsrInterimText: '',
+  activeAsrHasFinalText: false,
+  activeAsrSubmitOptions: null,
+  activeAsrSubmitted: false,
+  pendingConfirmTimer: null,
+  pendingConfirmToken: 0,
+  pageActive: true,
+  detailRequestToken: 0,
+  generalRequestToken: 0,
+  locationRequestToken: 0,
+  detailSessionToken: 0,
+  generalSessionToken: 0,
 
   onLoad(rawQuery) {
+    this.pageActive = true
     console.log('[SkyMate] page onLoad', rawQuery || {})
     const query = queryFromRaw(rawQuery)
     const chart = parseJsonMaybe(query.skyChart || query.chart || query.rawResult || query.result)
@@ -1187,8 +1538,13 @@ export default {
       const normalizedTargets = Array.isArray(targets) ? targets.map((item, index) => normalizeTarget(item, index)) : []
       const selected = selectedObjectFromQuery(query.selectedObject, normalizedTargets)
       if (selected) {
-        const visibleObjects = normalizedTargets.length ? normalizedTargets : [selected]
-        const skyObjects = createSkyChartObjects(visibleObjects, selected.key)
+        const cachedObjects = this.data.rawSkyObjects && this.data.rawSkyObjects.length ? this.data.rawSkyObjects : []
+        const baseVisibleObjects = normalizedTargets.length ? normalizedTargets : (cachedObjects.length ? cachedObjects : FALLBACK_TARGETS)
+        const visibleObjects = baseVisibleObjects.some(item => item.key === selected.key)
+          ? baseVisibleObjects
+          : [selected].concat(baseVisibleObjects)
+        const rawSkyObjects = collectSkyObjects(chart || visibleObjects, visibleObjects)
+        const skyObjects = createSkyChartObjects(rawSkyObjects, selected.key)
         const locationName = text(query.locationName || query.city || query.location, this.data.locationName)
         const generatedAt = safeGeneratedAt(readChartTimeValue(chart))
         const topMetaLine = createTopMetaLine(generatedAt)
@@ -1197,7 +1553,7 @@ export default {
           source: chart ? 'api' : 'page-query',
           reliable: !!chart,
           generatedAt,
-          location: queryPlace || { name: text(query.locationName || query.city || query.location, '当前位置') },
+          location: queryPlace || { name: text(query.locationName || query.city || query.location, '观测位置') },
           objects: visibleObjects,
           selectedObject: selected
         }, Object.assign({}, this.data, {
@@ -1206,6 +1562,7 @@ export default {
           topMetaLine,
           observationMetaLine,
           visibleObjects,
+          rawSkyObjects,
           selectedObject: selected
         }))
         this.setData(Object.assign({
@@ -1214,6 +1571,7 @@ export default {
           topMetaLine,
           observationMetaLine,
           visibleObjects,
+          rawSkyObjects,
           selectedKey: selected.key,
           selectedIndex: Math.max(0, visibleObjects.findIndex(item => item.key === selected.key)),
           selectedObject: selected,
@@ -1232,22 +1590,33 @@ export default {
       this.showChartResult({
         chart,
         targets: Array.isArray(targets) ? targets : null,
-        locationName: text(query.locationName || query.city || query.location, '当前位置'),
+        locationName: text(query.locationName || query.city || query.location, '观测位置'),
         source: 'page-query'
       })
       return
     }
 
     if (queryPlace) {
-      this.setData({ assistantLine: '收到经纬度，正在查当前位置星空。', diagnosticLine: 'query lat/lon' })
-      this.loadSkyChart(queryPlace)
+      const latText = Number.isFinite(queryPlace.lat) ? queryPlace.lat.toFixed(4) : '--'
+      const lonText = Number.isFinite(queryPlace.lon) ? queryPlace.lon.toFixed(4) : '--'
+      this.applyMode('chat')
+      this.setData({
+        currentPlace: queryPlace,
+        locationName: queryPlace.name || '观测位置',
+        topMetaLine: createTopMetaLine(Date.now()),
+        observationMetaLine: createObservationMetaLine(queryPlace.name || '观测位置', Date.now()),
+        requestStatus: 'location ok',
+        diagnosticLine: `lat=${latText} lon=${lonText}`,
+        assistantLine: `已收到 ${queryPlace.name || '传入位置'}，可以说“查看星图”。`,
+        locationLine: `传入位置：${latText}, ${lonText}`
+      })
       return
     }
 
     if (placeText || query.mode === 'loading') {
-      this.setData({ assistantLine: userText ? `收到问题：${userText}` : '正在尝试读取当前位置。', diagnosticLine: 'query text' })
+      this.setData({ assistantLine: userText ? `收到问题：${userText}` : '请说城市名后再查询星图。', diagnosticLine: 'query text' })
       if (placeText) this.handleConversationInput(placeText, 'page-query')
-      else this.loadCurrentLocationOrFallback()
+      else this.promptForCity('page-query')
       return
     }
 
@@ -1263,6 +1632,16 @@ export default {
   },
 
   onUnload() {
+    this.pageActive = false
+    this.skyRequestId += 1
+    this.detailRequestToken += 1
+    this.generalRequestToken += 1
+    this.locationRequestToken += 1
+    this.detailSessionToken += 1
+    this.generalSessionToken += 1
+    this.clearPendingConfirm()
+    this.clearAsrWindow({ stop: true })
+    this.stopAnswerSpeech()
     this.destroyDetailAgentSession()
     if (this.generalAgentSession && typeof this.generalAgentSession.destroy === 'function') {
       this.generalAgentSession.destroy()
@@ -1283,33 +1662,36 @@ export default {
 
   onKeyUp(event) {
     const code = event && (event.code || event.key || event.keyCode)
-    console.log('[SkyMate] key up', code)
-    this.reportEvent(`key:${code || 'unknown'}`)
-
     const isBack = code === 'Backspace' || code === 'Escape' || code === 'Back' || code === 'GoBack' || code === 4 || code === 8 || code === 27
     const isUp = code === 'ArrowUp' || code === 'Up' || code === 19
     const isDown = code === 'ArrowDown' || code === 'Down' || code === 20
-    const isConfirm = code === 'Enter' || code === 'NumpadEnter' || code === 'GlobalHook' || code === 'Select' || code === 'OK' || code === 13
+    const isGlobalHook = code === 'GlobalHook'
+    const isConfirm = code === 'Enter' || code === 'NumpadEnter' || code === 'Select' || code === 'OK' || code === 13
 
     if (isBack) {
       if (event && event.preventDefault) event.preventDefault()
-      if (event && event.stopPropagation) event.stopPropagation()
+      this.clearPendingConfirm()
       this.goBack()
       return
     }
 
     if (isUp || isDown) {
-      const mode = this.data.mode
-      const canMoveSelection = mode === 'overview' || mode === 'detail' || mode === 'locate'
-      if (!canMoveSelection) return
       if (event && event.preventDefault) event.preventDefault()
+      this.clearPendingConfirm()
       this.moveSelection(isUp ? -1 : 1)
+      return
+    }
+
+    if (isGlobalHook) {
+      if (event && event.preventDefault) event.preventDefault()
+      this.queueDelayedActivation('globalHook')
       return
     }
 
     if (isConfirm) {
       if (event && event.preventDefault) event.preventDefault()
-      this.confirmCurrent()
+      this.clearPendingConfirm()
+      this.activateSelection()
     }
   },
 
@@ -1335,27 +1717,181 @@ export default {
 
     this.setData({
       mode: modeKey,
-      pageTag: tagMap[modeKey],
-      isHome: modeKey === 'home',
-      isChat: modeKey === 'chat',
-      isLoading: modeKey === 'loading',
-      isOverview: modeKey === 'overview',
-      isDetail: modeKey === 'detail',
-      isLocate: modeKey === 'locate',
-      isError: modeKey === 'error',
-      homeDisplay: modeKey === 'home' ? 'block' : 'none',
-      chatDisplay: modeKey === 'chat' ? 'block' : 'none',
-      loadingDisplay: modeKey === 'loading' ? 'block' : 'none',
-      overviewDisplay: modeKey === 'overview' ? 'block' : 'none',
-      detailDisplay: modeKey === 'detail' ? 'block' : 'none',
-      locateDisplay: modeKey === 'locate' ? 'block' : 'none',
-      errorDisplay: modeKey === 'error' ? 'block' : 'none'
+      pageTag: tagMap[modeKey]
     })
   },
 
   startChat() {
     this.reportEvent('startChat')
     this.applyMode('chat')
+  },
+
+  stopActiveAsrRecognizer() {
+    const recognizer = this.activeAsrRecognizer
+    this.activeAsrRecognizer = null
+    if (!recognizer) return
+    try {
+      if (typeof recognizer.stop === 'function') {
+        recognizer.stop()
+        return
+      }
+      if (typeof recognizer.stopRecognition === 'function') {
+        recognizer.stopRecognition()
+        return
+      }
+      if (typeof recognizer.abort === 'function') recognizer.abort()
+    } catch (error) {
+      console.log('[SkyMate] ASR stop ignored', error || {})
+    }
+  },
+
+  clearAsrWindow(options) {
+    if (this.activeAsrSubmitTimer) {
+      clearTimeout(this.activeAsrSubmitTimer)
+      this.activeAsrSubmitTimer = null
+    }
+    if (this.activeAsrMaxTimer) {
+      clearTimeout(this.activeAsrMaxTimer)
+      this.activeAsrMaxTimer = null
+    }
+    this.activeAsrSubmitToken += 1
+    if (options && options.stop) this.stopActiveAsrRecognizer()
+    this.activeAsrStartedAt = 0
+    this.activeAsrLastInputAt = 0
+    this.activeAsrLatestText = ''
+    this.activeAsrInterimText = ''
+    this.activeAsrHasFinalText = false
+    this.activeAsrSubmitOptions = null
+    this.activeAsrSubmitted = false
+  },
+
+  beginAsrWindow(options) {
+    this.clearAsrWindow({ stop: true })
+    const now = Date.now()
+    this.activeAsrSubmitToken += 1
+    this.activeAsrStartedAt = now
+    this.activeAsrLastInputAt = now
+    this.activeAsrLatestText = ''
+    this.activeAsrInterimText = ''
+    this.activeAsrHasFinalText = false
+    this.activeAsrSubmitOptions = options || {}
+    this.activeAsrSubmitted = false
+    const token = this.activeAsrSubmitToken
+
+    if (typeof setTimeout === 'function') {
+      this.activeAsrMaxTimer = setTimeout(() => {
+        if (this.activeAsrSubmitToken !== token || this.activeAsrSubmitted) return
+        this.submitAsrWindow('max')
+      }, ASR_MAX_LISTEN_MS)
+    }
+  },
+
+  recordAsrResult(transcript, options) {
+    if (this.activeAsrSubmitted) return this.activeAsrLatestText
+    if (!this.activeAsrStartedAt) this.beginAsrWindow(options)
+    const value = text(transcript, '').trim()
+    if (value) {
+      this.activeAsrLatestText = value
+      this.activeAsrHasFinalText = !!(options && options.isFinal)
+      this.activeAsrLastInputAt = Date.now()
+    }
+    this.activeAsrSubmitOptions = Object.assign({}, this.activeAsrSubmitOptions || {}, options || {})
+    this.scheduleAsrWindowSubmit()
+    return this.activeAsrLatestText
+  },
+
+  scheduleAsrWindowSubmit() {
+    if (this.activeAsrSubmitted) return
+    if (this.activeAsrSubmitTimer) {
+      clearTimeout(this.activeAsrSubmitTimer)
+      this.activeAsrSubmitTimer = null
+    }
+
+    const now = Date.now()
+    const startedAt = this.activeAsrStartedAt || now
+    const lastInputAt = this.activeAsrLastInputAt || startedAt
+    const submitAt = Math.min(
+      startedAt + ASR_MAX_LISTEN_MS,
+      Math.max(startedAt + ASR_MIN_LISTEN_MS, lastInputAt + ASR_SILENCE_SUBMIT_MS)
+    )
+    const delay = Math.max(0, submitAt - now)
+    const token = this.activeAsrSubmitToken
+
+    if (typeof setTimeout !== 'function') {
+      this.submitAsrWindow('direct')
+      return
+    }
+
+    this.activeAsrSubmitTimer = setTimeout(() => {
+      if (this.activeAsrSubmitToken !== token || this.activeAsrSubmitted) return
+      this.submitAsrWindow('silence')
+    }, delay)
+  },
+
+  submitAsrWindow(reason) {
+    if (this.activeAsrSubmitted) return
+    let value = text(this.activeAsrLatestText, '').trim()
+    const options = this.activeAsrSubmitOptions || {}
+    const successStatus = options.successStatus || (options.detail ? 'detail-success' : 'success')
+    const emptyStatus = options.emptyStatus || (options.detail ? 'detail-empty' : 'empty')
+    const canSubmitShort = isAllowedShortAsrQuery(value)
+    const finalOrFallback = this.activeAsrHasFinalText || !!options.unflaggedResult
+    if (value && !canSubmitShort && reason === 'max') {
+      const rejectedShortText = value
+      value = ''
+      this.activeAsrLatestText = ''
+      this.activeAsrInterimText = ''
+      this.activeAsrHasFinalText = false
+      this.activeAsrSubmitOptions = Object.assign({}, options, { rejectedShortText })
+    } else if (value && !canSubmitShort && (!finalOrFallback || reason !== 'max')) {
+      this.activeAsrLastInputAt = Date.now()
+      this.setData({
+        asrStatus: options.detail ? 'detail-listening' : 'listening',
+        assistantLine: '听到的内容还不完整，请继续说。',
+        diagnosticLine: `asr-hold-short:${reason || 'window'}`
+      })
+      if (typeof setTimeout === 'function') {
+        const token = this.activeAsrSubmitToken
+        this.activeAsrSubmitTimer = setTimeout(() => {
+          if (this.activeAsrSubmitToken !== token || this.activeAsrSubmitted) return
+          this.submitAsrWindow('max')
+        }, ASR_SHORT_FINAL_GRACE_MS)
+      }
+      return
+    }
+
+    this.activeAsrSubmitted = true
+    if (this.activeAsrSubmitTimer) {
+      clearTimeout(this.activeAsrSubmitTimer)
+      this.activeAsrSubmitTimer = null
+    }
+    if (this.activeAsrMaxTimer) {
+      clearTimeout(this.activeAsrMaxTimer)
+      this.activeAsrMaxTimer = null
+    }
+    this.activeAsrSubmitToken += 1
+    this.stopActiveAsrRecognizer()
+
+    this.setData({
+      asrStatus: value ? successStatus : emptyStatus,
+      assistantLine: value ? asrTranscriptLine(value) : '这次没有听清，请重新说一遍。',
+      diagnosticLine: `asr-submit:${reason || 'window'}`
+    })
+
+    this.activeAsrStartedAt = 0
+    this.activeAsrLastInputAt = 0
+    this.activeAsrLatestText = ''
+    this.activeAsrInterimText = ''
+    this.activeAsrHasFinalText = false
+    this.activeAsrSubmitOptions = null
+
+    if (options.detail) {
+      this.handleConversationInput(value || '我该怎么找？', 'voice')
+      return
+    }
+
+    if (value) this.handleConversationInput(value, 'voice')
+    else this.setData({ assistantLine: '这次没有听清，请重新聆听。' })
   },
 
   startUnifiedAsr() {
@@ -1365,46 +1901,84 @@ export default {
 
   startAsr() {
     this.reportEvent('startAsr')
+    this.beginAsrWindow({
+      successStatus: 'success',
+      emptyStatus: 'empty'
+    })
     this.applyMode('chat')
     this.setData({
       asrStatus: 'listening',
-      assistantLine: '我在听，说出城市和今晚想看的目标。'
+      assistantLine: '我在听，可以说城市名或观测问题。'
     })
 
     const Recognition = getSpeechRecognitionCandidate()
     if (!Recognition) {
       if (this.startWxAsr()) return
+      this.clearAsrWindow({ stop: true })
       this.setData({
         asrStatus: 'unavailable',
-        assistantLine: '当前环境没有 ASR，请允许定位或说出支持的城市。'
+        assistantLine: '当前环境没有 ASR，请说城市名。'
       })
       return
     }
 
     const recognition = new Recognition()
     configureSpeechRecognition(recognition)
+    this.activeAsrRecognizer = recognition
+    const recognitionToken = this.activeAsrSubmitToken
 
     recognition.onresult = (event) => {
-      const transcript = extractTranscriptFromEvent(event)
-      console.log('[SkyMate] ASR result', transcript, event || {})
+      if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
+      const parts = extractSpeechRecognitionParts(event)
+      const displayValue = text(parts.displayText, '').trim()
+      let buffered = this.activeAsrLatestText
+      this.activeAsrInterimText = parts.interimText
+      if (parts.finalText || (!parts.hasResultFlags && displayValue)) {
+        buffered = this.recordAsrResult(parts.finalText || displayValue, {
+          successStatus: 'success',
+          emptyStatus: 'empty',
+          isFinal: !!parts.finalText,
+          unflaggedResult: !parts.hasResultFlags
+        })
+      }
+      console.log('[SkyMate] ASR result', parts, { buffered, event: event || {} })
       this.setData({
-        asrStatus: transcript ? 'success' : 'empty',
-        assistantLine: transcript ? `我听到：${transcript}` : '我听到了，正在判断。'
+        asrStatus: displayValue ? 'listening' : 'empty',
+        assistantLine: displayValue ? asrTranscriptLine(displayValue) : '我在听，请继续说完整问题。'
       })
-      if (transcript) this.handleConversationInput(transcript, 'voice')
-      else this.loadCurrentLocationOrFallback()
     }
 
     recognition.onerror = (event) => {
+      if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
       console.log('[SkyMate] ASR error', event || {})
+      this.clearAsrWindow({ stop: true })
       this.setData({
         asrStatus: 'error',
-        assistantLine: '这次语音没有成功，可以重试或允许定位。'
+        assistantLine: '这次语音没有成功，可以重试或直接说城市名。'
       })
     }
 
-    recognition.onend = () => console.log('[SkyMate] ASR end')
-    recognition.start()
+    recognition.onend = () => {
+      console.log('[SkyMate] ASR end')
+      if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
+      if (this.activeAsrSubmitted) return
+      if (this.activeAsrHasFinalText) {
+        this.submitAsrWindow('end-final')
+        return
+      }
+      this.setData({
+        asrStatus: 'ended',
+        assistantLine: this.activeAsrInterimText ? '语音提前结束，请重新说完整问题。' : '没有听到完整内容，请重试。'
+      })
+      this.clearAsrWindow({ stop: false })
+    }
+    try {
+      recognition.start()
+    } catch (error) {
+      console.log('[SkyMate] ASR start failed', error || {})
+      this.clearAsrWindow({ stop: true })
+      this.setData({ asrStatus: 'start-error', assistantLine: '无法启动语音识别，请检查权限后重试。' })
+    }
   },
 
   startWxAsr() {
@@ -1419,28 +1993,31 @@ export default {
         asrStatus: 'wx-listening',
         assistantLine: '正在调用 Rokid 语音识别。'
       })
+      this.activeAsrRecognizer = recognizer
+      const recognitionToken = this.activeAsrSubmitToken
 
       const onResult = (event) => {
-        const result = event || {}
-        const transcript = result.transcript ||
-          result.text ||
-          result.result ||
-          (result.results && result.results[0] && result.results[0][0] && result.results[0][0].transcript) ||
-          ''
-        console.log('[SkyMate] wx ASR result', transcript, result)
-        this.setData({
-          asrStatus: transcript ? 'wx-success' : 'wx-empty',
-          assistantLine: transcript ? `我听到：${transcript}` : '我听到了，正在判断。'
+        if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
+        const transcript = text(extractTranscriptFromEvent(event), '').trim()
+        const buffered = this.recordAsrResult(transcript, {
+          successStatus: 'wx-success',
+          emptyStatus: 'wx-empty',
+          unflaggedResult: true
         })
-        if (transcript) this.handleConversationInput(transcript, 'voice')
-        else this.loadCurrentLocationOrFallback()
+        console.log('[SkyMate] wx ASR result', transcript, { buffered, event: event || {} })
+        this.setData({
+          asrStatus: buffered ? 'wx-listening' : 'wx-empty',
+          assistantLine: buffered ? asrTranscriptLine(buffered) : '我在听，请继续说完整问题。'
+        })
       }
 
       const onError = (error) => {
+        if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
         console.log('[SkyMate] wx ASR error', error || {})
+        this.clearAsrWindow({ stop: true })
         this.setData({
           asrStatus: 'wx-error',
-          assistantLine: 'Rokid 语音识别没有成功，可以重试或允许定位。'
+          assistantLine: 'Rokid 语音识别没有成功，可以重试或直接说城市名。'
         })
       }
 
@@ -1450,16 +2027,22 @@ export default {
       if (typeof recognizer.onError === 'function') recognizer.onError(onError)
       else recognizer.onerror = onError
 
-      if (typeof recognizer.onEnd === 'function') recognizer.onEnd(() => console.log('[SkyMate] wx ASR end'))
-      else recognizer.onend = () => console.log('[SkyMate] wx ASR end')
+      const onEnd = () => {
+        console.log('[SkyMate] wx ASR end')
+        if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken || this.activeAsrSubmitted) return
+        if (this.activeAsrLatestText) this.submitAsrWindow('wx-end')
+        else this.clearAsrWindow({ stop: false })
+      }
+      if (typeof recognizer.onEnd === 'function') recognizer.onEnd(onEnd)
+      else recognizer.onend = onEnd
 
       if (typeof recognizer.start === 'function') {
-        recognizer.start({ lang: 'zh-CN' })
+        recognizer.start(asrStartOptions())
         return true
       }
 
       if (typeof recognizer.startRecognition === 'function') {
-        recognizer.startRecognition({ lang: 'zh-CN' })
+        recognizer.startRecognition(asrStartOptions())
         return true
       }
     } catch (error) {
@@ -1470,6 +2053,11 @@ export default {
 
   startDetailAsr() {
     this.reportEvent('startDetailAsr')
+    this.beginAsrWindow({
+      detail: true,
+      successStatus: 'detail-success',
+      emptyStatus: 'detail-empty'
+    })
     this.applyMode('detail')
     this.setData({
       asrStatus: 'detail-listening',
@@ -1482,24 +2070,42 @@ export default {
     const Recognition = getSpeechRecognitionCandidate()
     if (!Recognition) {
       if (this.startWxDetailAsr()) return
+      this.clearAsrWindow({ stop: true })
       this.handleConversationInput('我该怎么找？', 'voice')
       return
     }
 
     const recognition = new Recognition()
     configureSpeechRecognition(recognition)
+    this.activeAsrRecognizer = recognition
+    const recognitionToken = this.activeAsrSubmitToken
 
     recognition.onresult = (event) => {
-      const transcript = extractTranscriptFromEvent(event)
-      console.log('[SkyMate] detail ASR result', transcript)
+      if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
+      const parts = extractSpeechRecognitionParts(event)
+      const displayValue = text(parts.displayText, '').trim()
+      let buffered = this.activeAsrLatestText
+      this.activeAsrInterimText = parts.interimText
+      if (parts.finalText || (!parts.hasResultFlags && displayValue)) {
+        buffered = this.recordAsrResult(parts.finalText || displayValue, {
+          detail: true,
+          successStatus: 'detail-success',
+          emptyStatus: 'detail-empty',
+          isFinal: !!parts.finalText,
+          unflaggedResult: !parts.hasResultFlags
+        })
+      }
+      console.log('[SkyMate] detail ASR result', parts, { buffered, event: event || {} })
       this.setData({
-        asrStatus: transcript ? 'detail-success' : 'detail-empty'
+        asrStatus: displayValue ? 'detail-listening' : 'detail-empty',
+        detailQuestion: displayValue ? asrQuestionLine(displayValue) : '正在听...'
       })
-      this.handleConversationInput(transcript || '我该怎么找？', 'voice')
     }
 
     recognition.onerror = (event) => {
+      if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
       console.log('[SkyMate] detail ASR error', event || {})
+      this.clearAsrWindow({ stop: true })
       const target = this.data.selectedObject || FALLBACK_TARGETS[0]
       this.setData({
         asrStatus: 'detail-error',
@@ -1511,8 +2117,32 @@ export default {
       })
     }
 
-    recognition.onend = () => console.log('[SkyMate] detail ASR end')
-    recognition.start()
+    recognition.onend = () => {
+      console.log('[SkyMate] detail ASR end')
+      if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
+      if (this.activeAsrSubmitted) return
+      if (this.activeAsrHasFinalText) {
+        this.submitAsrWindow('end-final')
+        return
+      }
+      this.setData({
+        asrStatus: 'detail-ended',
+        detailQuestion: '语音提前结束',
+        detailAnswer: '请重新开始对话并说完整问题。'
+      })
+      this.clearAsrWindow({ stop: false })
+    }
+    try {
+      recognition.start()
+    } catch (error) {
+      console.log('[SkyMate] detail ASR start failed', error || {})
+      this.clearAsrWindow({ stop: true })
+      this.setData({
+        asrStatus: 'detail-start-error',
+        detailQuestion: '无法启动语音',
+        detailAnswer: '请检查麦克风权限后重试。'
+      })
+    }
   },
 
   startWxDetailAsr() {
@@ -1530,16 +2160,29 @@ export default {
         detailObjectContext: createDetailObjectContext(target, this.data),
         assistantLine: `正在听你问 ${text(target.name, '这个目标')}。`
       })
+      this.activeAsrRecognizer = recognizer
+      const recognitionToken = this.activeAsrSubmitToken
 
       const onResult = (event) => {
-        const transcript = extractTranscriptFromEvent(event)
-        console.log('[SkyMate] wx detail ASR result', transcript, event || {})
-        this.setData({ asrStatus: transcript ? 'detail-wx-success' : 'detail-wx-empty' })
-        this.handleConversationInput(transcript || '我该怎么找？', 'voice')
+        if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
+        const transcript = text(extractTranscriptFromEvent(event), '').trim()
+        const buffered = this.recordAsrResult(transcript, {
+          detail: true,
+          successStatus: 'detail-wx-success',
+          emptyStatus: 'detail-wx-empty',
+          unflaggedResult: true
+        })
+        console.log('[SkyMate] wx detail ASR result', transcript, { buffered, event: event || {} })
+        this.setData({
+          asrStatus: buffered ? 'detail-wx-listening' : 'detail-wx-empty',
+          detailQuestion: buffered ? asrQuestionLine(buffered) : '正在听...'
+        })
       }
 
       const onError = (error) => {
+        if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
         console.log('[SkyMate] wx detail ASR error', error || {})
+        this.clearAsrWindow({ stop: true })
         this.setData({
           asrStatus: 'detail-wx-error',
           detailAgentStatus: 'local',
@@ -1555,16 +2198,22 @@ export default {
       if (typeof recognizer.onError === 'function') recognizer.onError(onError)
       else recognizer.onerror = onError
 
-      if (typeof recognizer.onEnd === 'function') recognizer.onEnd(() => console.log('[SkyMate] wx detail ASR end'))
-      else recognizer.onend = () => console.log('[SkyMate] wx detail ASR end')
+      const onEnd = () => {
+        console.log('[SkyMate] wx detail ASR end')
+        if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken || this.activeAsrSubmitted) return
+        if (this.activeAsrLatestText) this.submitAsrWindow('wx-detail-end')
+        else this.clearAsrWindow({ stop: false })
+      }
+      if (typeof recognizer.onEnd === 'function') recognizer.onEnd(onEnd)
+      else recognizer.onend = onEnd
 
       if (typeof recognizer.start === 'function') {
-        recognizer.start({ lang: 'zh-CN' })
+        recognizer.start(asrStartOptions())
         return true
       }
 
       if (typeof recognizer.startRecognition === 'function') {
-        recognizer.startRecognition({ lang: 'zh-CN' })
+        recognizer.startRecognition(asrStartOptions())
         return true
       }
     } catch (error) {
@@ -1575,14 +2224,17 @@ export default {
 
   async getDetailAgentSession() {
     if (this.detailAgentSession) return this.detailAgentSession
+    const sessionToken = this.detailSessionToken + 1
+    this.detailSessionToken = sessionToken
 
     const LanguageModel = getLanguageModelCandidate()
     if (!LanguageModel || typeof LanguageModel.availability !== 'function' || typeof LanguageModel.create !== 'function') return null
 
     const availability = await LanguageModel.availability()
+    if (!this.pageActive || sessionToken !== this.detailSessionToken) return null
     if (availability !== 'available') return null
 
-    this.detailAgentSession = await LanguageModel.create({
+    const session = await LanguageModel.create({
       initialPrompts: [
         {
           role: 'system',
@@ -1590,20 +2242,27 @@ export default {
         }
       ]
     })
-
-    return this.detailAgentSession
+    if (!this.pageActive || sessionToken !== this.detailSessionToken) {
+      if (session && typeof session.destroy === 'function') session.destroy()
+      return null
+    }
+    this.detailAgentSession = session
+    return session
   },
 
   async getGeneralAgentSession() {
     if (this.generalAgentSession) return this.generalAgentSession
+    const sessionToken = this.generalSessionToken + 1
+    this.generalSessionToken = sessionToken
 
     const LanguageModel = getLanguageModelCandidate()
     if (!LanguageModel || typeof LanguageModel.availability !== 'function' || typeof LanguageModel.create !== 'function') return null
 
     const availability = await LanguageModel.availability()
+    if (!this.pageActive || sessionToken !== this.generalSessionToken) return null
     if (availability !== 'available') return null
 
-    this.generalAgentSession = await LanguageModel.create({
+    const session = await LanguageModel.create({
       initialPrompts: [
         {
           role: 'system',
@@ -1611,20 +2270,43 @@ export default {
         }
       ]
     })
-
-    return this.generalAgentSession
+    if (!this.pageActive || sessionToken !== this.generalSessionToken) {
+      if (session && typeof session.destroy === 'function') session.destroy()
+      return null
+    }
+    this.generalAgentSession = session
+    return session
   },
 
   destroyDetailAgentSession() {
+    this.detailSessionToken += 1
     if (this.detailAgentSession && typeof this.detailAgentSession.destroy === 'function') {
       this.detailAgentSession.destroy()
     }
     this.detailAgentSession = null
   },
 
-  async askDetailAgent(question) {
+  stopAnswerSpeech() {
+    this.activeUtterance = null
+  },
+
+  speakAnswer(answer) {
+    this.stopAnswerSpeech()
+    const result = speakAnswerText(answer, this)
+    const source = text(result && result.source, 'unavailable')
+    console.log('[SkyMate] TTS result', result || {})
+    this.setData({
+      asrStatus: source === 'unavailable' ? 'tts-off' : source === 'error' ? 'tts-error' : source === 'empty' ? 'tts-empty' : 'tts-submitted'
+    })
+    return result
+  },
+
+  async askDetailAgent(question, source) {
+    const requestToken = this.detailRequestToken + 1
+    this.detailRequestToken = requestToken
     const target = this.data.selectedObject || FALLBACK_TARGETS[0]
     const questionText = text(question, '我该怎么找？')
+    const questionDisplay = source === 'voice' ? asrQuestionLine(questionText) : `你问：${questionText}`
     const fallbackAnswer = detailGuideAnswer(target, questionText)
     const context = createDetailObjectContext(target, this.data)
     const userHistory = (this.data.detailChatHistory || []).concat({
@@ -1635,7 +2317,7 @@ export default {
     this.setData({
       detailChatHistory: userHistory,
       detailObjectContext: context,
-      detailQuestion: `你问：${questionText}`,
+      detailQuestion: questionDisplay,
       detailAnswer: '正在结合当前星图回答...',
       detailAgentStatus: 'thinking',
       assistantLine: `正在围绕 ${text(target.name, '当前星体')} 回答。`
@@ -1647,6 +2329,7 @@ export default {
     } catch (error) {
       console.log('[SkyMate] detail session unavailable', error || {})
     }
+    if (!this.pageActive || requestToken !== this.detailRequestToken) return ''
 
     if (!session || typeof session.prompt !== 'function') {
       const nextHistory = userHistory.concat({ role: 'assistant', content: fallbackAnswer }).slice(-10)
@@ -1656,23 +2339,28 @@ export default {
         detailAgentStatus: 'local',
         assistantLine: '当前没有大模型配置，已用星体上下文给出本地回答。'
       })
+      this.speakAnswer(fallbackAnswer)
       return fallbackAnswer
     }
 
     try {
       const promptData = Object.assign({}, this.data, { detailChatHistory: userHistory })
       const modelAnswer = await session.prompt(createDetailPrompt(target, questionText, promptData))
-      const answer = shortText(modelAnswer || fallbackAnswer, 150)
+      if (!this.pageActive || requestToken !== this.detailRequestToken) return ''
+      const answer = text(modelAnswer || fallbackAnswer, '')
+      const answerDisplay = modelDetailDisplay(answer)
       const nextHistory = userHistory.concat({ role: 'assistant', content: answer }).slice(-10)
       this.setData({
         detailChatHistory: nextHistory,
-        detailAnswer: answer,
+        detailAnswer: answerDisplay,
         detailAgentStatus: 'model',
-        assistantLine: answer
+        assistantLine: modelGeneralDisplay(answer)
       })
+      this.speakAnswer(answer)
       return answer
     } catch (error) {
       console.log('[SkyMate] detail agent fallback', error || {})
+      if (!this.pageActive || requestToken !== this.detailRequestToken) return ''
       const nextHistory = userHistory.concat({ role: 'assistant', content: fallbackAnswer }).slice(-10)
       this.setData({
         detailChatHistory: nextHistory,
@@ -1680,13 +2368,16 @@ export default {
         detailAgentStatus: 'local',
         assistantLine: '大模型暂时不可用，已按当前星体上下文回答。'
       })
+      this.speakAnswer(fallbackAnswer)
       return fallbackAnswer
     }
   },
 
   async askGeneralAgent(question) {
+    const requestToken = this.generalRequestToken + 1
+    this.generalRequestToken = requestToken
     const questionText = text(question, '').trim()
-    if (!questionText) return this.loadCurrentLocationOrFallback()
+    if (!questionText) return this.promptForCity('empty-general')
 
     const fallbackAnswer = createLocalGeneralAnswer(questionText, this.data)
     const userHistory = (this.data.generalChatHistory || []).concat({
@@ -1708,6 +2399,7 @@ export default {
     } catch (error) {
       console.log('[SkyMate] general session unavailable', error || {})
     }
+    if (!this.pageActive || requestToken !== this.generalRequestToken) return ''
 
     if (!session || typeof session.prompt !== 'function') {
       const nextHistory = userHistory.concat({ role: 'assistant', content: fallbackAnswer }).slice(-10)
@@ -1716,28 +2408,34 @@ export default {
         assistantLine: fallbackAnswer,
         requestStatus: 'general local'
       })
+      this.speakAnswer(fallbackAnswer)
       return fallbackAnswer
     }
 
     try {
       const promptData = Object.assign({}, this.data, { generalChatHistory: userHistory })
       const modelAnswer = await session.prompt(createGeneralChatPrompt(questionText, promptData))
-      const answer = shortText(modelAnswer || fallbackAnswer, 150)
+      if (!this.pageActive || requestToken !== this.generalRequestToken) return ''
+      const answer = text(modelAnswer || fallbackAnswer, '')
+      const answerDisplay = modelGeneralDisplay(answer)
       const nextHistory = userHistory.concat({ role: 'assistant', content: answer }).slice(-10)
       this.setData({
         generalChatHistory: nextHistory,
-        assistantLine: answer,
+        assistantLine: answerDisplay,
         requestStatus: 'general model'
       })
+      this.speakAnswer(answer)
       return answer
     } catch (error) {
       console.log('[SkyMate] general agent fallback', error || {})
+      if (!this.pageActive || requestToken !== this.generalRequestToken) return ''
       const nextHistory = userHistory.concat({ role: 'assistant', content: fallbackAnswer }).slice(-10)
       this.setData({
         generalChatHistory: nextHistory,
         assistantLine: fallbackAnswer,
         requestStatus: 'general local'
       })
+      this.speakAnswer(fallbackAnswer)
       return fallbackAnswer
     }
   },
@@ -1768,20 +2466,17 @@ export default {
     const mode = context && context.mode
 
     if (isBackIntent(q)) return { type: 'navigate_back' }
-    if (isSwitchObjectIntent(q, context)) return { type: 'switch_object', targetHint: q }
     if (
       mode === 'detail' &&
       context &&
-      context.selectedObject &&
-      !hasLocationSignal(q) &&
-      q.indexOf('刷新') < 0 &&
-      q.indexOf('重新定位') < 0 &&
-      q.indexOf('今晚能看到什么') < 0 &&
-      q.indexOf('现在能看到什么') < 0
+      context.selectedObject
     ) {
+      if (isDetailSkyChartQuery(q, context)) return { type: 'sky_chart_query' }
+      if (isSwitchObjectIntent(q, context)) return { type: 'switch_object', targetHint: q }
       return { type: 'detail_question' }
     }
-    if (hasLocationSignal(q) || isSkyChartIntent(q)) return { type: 'sky_chart_query' }
+    if (isSwitchObjectIntent(q, context)) return { type: 'switch_object', targetHint: q }
+    if (isCurrentLocationIntent(q) || hasLocationSignal(q) || hasNamedLocationRequest(q) || isSkyChartIntent(q)) return { type: 'sky_chart_query' }
     if (isAstronomyQuestion(q)) return { type: 'general_astronomy_question' }
     return { type: 'general_astronomy_question' }
   },
@@ -1790,7 +2485,12 @@ export default {
     this.reportEvent(`conversation:${source || 'unknown'}`)
     console.log('[SkyMate] conversation input', source, input)
     const questionText = text(input, '').trim()
-    if (!questionText) return this.loadCurrentLocationOrFallback()
+    if (!questionText) return this.promptForCity('empty-conversation')
+
+    if (isCurrentLocationIntent(questionText)) {
+      this.setData({ lastIntent: 'sky_chart_query' })
+      return this.promptForCity('current-location-disabled')
+    }
 
     const context = this.getConversationContext()
     const intent = this.detectIntent(questionText, context)
@@ -1810,36 +2510,74 @@ export default {
     }
 
     if (intent.type === 'detail_question') {
-      return this.askDetailAgent(questionText)
+      return this.askDetailAgent(questionText, source)
     }
 
     return this.askGeneralAgent(questionText)
   },
 
   async resolvePlaceFromText(input) {
+    const result = await this.resolvePlaceFromTextWithMeta(input)
+    return result.place
+  },
+
+  async resolvePlaceFromTextWithMeta(input) {
+    const namedLocationRequested = hasNamedLocationRequest(input)
     const coordinate = coordinateFromText(input)
     if (coordinate) {
       console.log('[SkyMate] text coordinate resolved', coordinate)
-      return coordinate
+      return {
+        place: coordinate,
+        namedLocationRequested: true,
+        query: coordinate.name,
+        stage: 'coordinate'
+      }
     }
 
     const city = cityFromText(input)
     if (city) {
       console.log('[SkyMate] local city resolved', city)
-      return city
+      return {
+        place: city,
+        namedLocationRequested: true,
+        query: city.name,
+        stage: 'local-city'
+      }
     }
 
-    const geocodedPlace = await this.resolveLocationWithOnlineGeocoder(input)
-    if (geocodedPlace) return geocodedPlace
+    const locationToken = this.locationRequestToken
+    const extractedLocationName = await this.extractLocationNameWithModel(input, locationToken)
+    if (extractedLocationName) {
+      if (!this.pageActive || locationToken !== this.locationRequestToken) {
+        return { place: null, namedLocationRequested: true, query: extractedLocationName, stage: 'stale' }
+      }
+      const geocodedPlace = await this.resolveLocationWithOnlineGeocoder(extractedLocationName, locationToken)
+      return {
+        place: geocodedPlace,
+        namedLocationRequested: true,
+        query: extractedLocationName,
+        stage: geocodedPlace ? 'geocode' : 'geocode-failed'
+      }
+    }
 
-    const resolvedPlace = await this.resolveLocationWithModel(input)
-    if (resolvedPlace) return resolvedPlace
-
-    return null
+    return {
+      place: null,
+      namedLocationRequested,
+      query: namedLocationRequested ? roughNamedLocationCandidate(input) || text(input, '').trim() : '',
+      stage: 'unresolved'
+    }
   },
 
   async resolvePlaceAndLoadSkyChart(input) {
-    const place = await this.resolvePlaceFromText(input)
+    const requestToken = this.locationRequestToken + 1
+    this.locationRequestToken = requestToken
+    if (isCurrentLocationIntent(input)) {
+      return this.promptForCity('current-location-disabled')
+    }
+
+    const resolved = await this.resolvePlaceFromTextWithMeta(input)
+    if (!this.pageActive || requestToken !== this.locationRequestToken) return null
+    const place = resolved.place
 
     if (place) {
       this.setData({ currentPlace: place })
@@ -1847,26 +2585,22 @@ export default {
       return place
     }
 
+    if (resolved.namedLocationRequested) {
+      this.applyMode('chat')
+      this.setData({
+        requestStatus: 'location unresolved',
+        diagnosticLine: shortText(`${resolved.stage}: ${resolved.query || text(input, '')}`, 62),
+        assistantLine: `没有解析到 ${shortText(resolved.query || text(input, ''), 12)}，请换个城市名再试。`
+      })
+      return null
+    }
+
     if (this.data.currentPlace && isSkyChartIntent(input)) {
       this.loadSkyChart(this.data.currentPlace)
       return this.data.currentPlace
     }
 
-    try {
-      const runtimePlace = await this.readRuntimeLocation()
-      this.setData({ currentPlace: runtimePlace })
-      this.loadSkyChart(runtimePlace)
-      return runtimePlace
-    } catch (error) {
-      console.log('[SkyMate] conversation location unavailable', error || {})
-      this.applyMode('chat')
-      this.setData({
-        requestStatus: 'location unresolved',
-        diagnosticLine: shortText(errorText(error), 62),
-        assistantLine: '我还没有拿到你眼镜的当前位置。请告诉我城市，或允许获取当前位置。'
-      })
-      return null
-    }
+    return this.promptForCity('location-required')
   },
 
   switchSelectedObject(intent) {
@@ -1883,7 +2617,10 @@ export default {
       selectedIndex: index,
       selectedKey: target.key,
       selectedObject: target,
-      skyObjects: createSkyChartObjects(this.data.skyObjects, target.key),
+      skyObjects: createSkyChartObjects(
+        this.data.rawSkyObjects && this.data.rawSkyObjects.length ? this.data.rawSkyObjects : targets,
+        target.key
+      ),
       skyKnowledgeBase: knowledge,
       detailChatHistory: [],
       assistantLine: `已切换到 ${target.name}，可以继续追问。`
@@ -1892,11 +2629,12 @@ export default {
     return target
   },
 
-  async resolveLocationWithOnlineGeocoder(input) {
-    const query = extractLocationQuery(input)
-    const url = geocodingUrl(input)
+  async resolveLocationWithOnlineGeocoder(locationName, requestToken) {
+    const query = text(locationName, '').trim()
+    const url = geocodingUrl(query)
     if (!url) return null
 
+    if (!this.pageActive || (requestToken && requestToken !== this.locationRequestToken)) return null
     this.setData({
       requestStatus: 'geocode',
       diagnosticLine: shortText(query, 62),
@@ -1909,11 +2647,13 @@ export default {
         method: 'GET',
         headers: { accept: 'application/json' }
       })
+      if (!this.pageActive || (requestToken && requestToken !== this.locationRequestToken)) return null
       if (!response || !response.ok) {
         console.log('[SkyMate] geocode HTTP failed', response && response.status)
         return null
       }
       const json = await response.json()
+      if (!this.pageActive || (requestToken && requestToken !== this.locationRequestToken)) return null
       const place = placeFromGeocodingResult(json, query)
       console.log('[SkyMate] geocode result', place, json)
       if (!place) return null
@@ -1929,172 +2669,71 @@ export default {
     }
   },
 
-  async resolveLocationWithModel(input) {
+  async extractLocationNameWithModel(input, requestToken) {
     const query = text(input, '').trim()
-    if (!query) return null
+    if (!query) return ''
 
     const LanguageModel = getLanguageModelCandidate()
     if (!LanguageModel || typeof LanguageModel.availability !== 'function' || typeof LanguageModel.create !== 'function') {
-      console.log('[SkyMate] location model unavailable')
-      return null
+      console.log('[SkyMate] location extraction model unavailable')
+      return ''
     }
 
+    if (!this.pageActive || (requestToken && requestToken !== this.locationRequestToken)) return ''
     this.setData({
-      requestStatus: 'resolve location',
+      requestStatus: 'extract location',
       diagnosticLine: shortText(query, 62),
-      assistantLine: `正在解析地点：${query}`
+      assistantLine: '正在从问题中提取城市。'
     })
 
     let session = null
     try {
       const availability = await LanguageModel.availability()
+      if (!this.pageActive || (requestToken && requestToken !== this.locationRequestToken)) return ''
       console.log('[SkyMate] location model availability', availability)
-      if (availability !== 'available') return null
+      if (availability !== 'available') return ''
 
       session = await LanguageModel.create({
         initialPrompts: [
           {
             role: 'system',
-            content: '你是地理编码助手。只输出严格 JSON，不输出解释。'
+            content: '你是地点抽取助手。只输出严格 JSON，不输出解释。'
           }
         ]
       })
+      if (!this.pageActive || (requestToken && requestToken !== this.locationRequestToken)) return ''
 
-      const answer = await session.prompt(createLocationResolvePrompt(query))
-      console.log('[SkyMate] location model answer', answer)
-      const parsed = parseModelJson(answer)
-      const place = normalizeResolvedPlace(parsed, query)
-      console.log('[SkyMate] model resolved place', place, parsed)
-      if (!place) return null
+      const answer = await session.prompt(createLocationNameExtractPrompt(query))
+      if (!this.pageActive || (requestToken && requestToken !== this.locationRequestToken)) return ''
+      console.log('[SkyMate] location extraction answer', answer)
+      const locationName = locationNameFromModelAnswer(answer)
+      console.log('[SkyMate] extracted location name', locationName)
+      if (!locationName) return ''
 
       this.setData({
-        requestStatus: 'resolved location',
-        diagnosticLine: `${place.lat},${place.lon}`,
-        assistantLine: `已解析到 ${place.name}，正在查星空。`
+        requestStatus: 'location extracted',
+        diagnosticLine: shortText(locationName, 62),
+        assistantLine: `已提取城市：${locationName}，正在联网查询坐标。`
       })
-      return place
+      return locationName
     } catch (error) {
-      console.log('[SkyMate] location model resolve failed', error || {})
-      return null
+      console.log('[SkyMate] location extraction failed', error || {})
+      return ''
     } finally {
       if (session && typeof session.destroy === 'function') session.destroy()
     }
   },
 
-  runCurrentLocation() {
-    this.reportEvent('runCurrentLocation')
-    this.loadCurrentLocationOrFallback()
-  },
-
-  async locateOnly() {
-    this.reportEvent('locateOnly')
+  promptForCity(reason) {
+    this.reportEvent('promptForCity')
+    this.applyMode('chat')
     this.setData({
-      locationName: '正在定位',
-      topMetaLine: '正在定位',
-      observationMetaLine: '基于当前位置 · 正在定位',
-      requestStatus: 'location',
-      diagnosticLine: 'try location',
-      assistantLine: '正在读取 GPS 位置。',
-      locationLine: '正在获取当前位置...'
+      requestStatus: 'city required',
+      diagnosticLine: shortText(reason || 'no city', 62),
+      assistantLine: '请直接说城市名，例如“杭州”或“今晚苏州能看到什么”。',
+      locationLine: '等待城市名'
     })
-
-    try {
-      const place = await this.readRuntimeLocation()
-      const latText = Number.isFinite(place.lat) ? place.lat.toFixed(4) : '--'
-      const lonText = Number.isFinite(place.lon) ? place.lon.toFixed(4) : '--'
-      this.setData({
-        currentPlace: place,
-        locationName: place.name || '当前位置',
-        topMetaLine: createTopMetaLine(Date.now()),
-        observationMetaLine: createObservationMetaLine(place.name || '当前位置', Date.now()),
-        requestStatus: 'location ok',
-        diagnosticLine: `lat=${latText} lon=${lonText}`,
-        assistantLine: '已拿到当前位置，可以开始语音提问。',
-        locationLine: `当前位置：${latText}, ${lonText}`
-      })
-    } catch (error) {
-      console.log('[SkyMate] locateOnly unavailable', error || {})
-      this.setData({
-        requestStatus: 'location failed',
-        diagnosticLine: errorText(error),
-        assistantLine: '暂时没有拿到 GPS 位置。',
-        locationLine: '当前位置：未获取到'
-      })
-    }
-  },
-
-  async loadCurrentLocationOrFallback() {
-    this.applyMode('loading')
-    this.setData({
-      locationName: '正在定位',
-      topMetaLine: '正在定位',
-      observationMetaLine: '基于当前位置 · 正在定位',
-      requestStatus: 'location',
-      diagnosticLine: 'try location',
-      assistantLine: '我先尝试读取设备当前位置。'
-    })
-
-    try {
-      const place = await this.readRuntimeLocation()
-      this.setData({ currentPlace: place })
-      this.loadSkyChart(place)
-    } catch (error) {
-      console.log('[SkyMate] location unavailable', error || {})
-      this.setData({
-        requestStatus: 'location unresolved',
-        diagnosticLine: errorText(error),
-        assistantLine: '我还没有拿到你眼镜的当前位置。请告诉我城市，或允许获取当前位置。'
-      })
-      this.applyMode('chat')
-    }
-  },
-
-  readRuntimeLocation() {
-    const root = getRuntimeRoot()
-
-    if (root.wx && typeof root.wx.getLocation === 'function') {
-      return new Promise((resolve, reject) => {
-        try {
-          root.wx.getLocation({
-            type: 'wgs84',
-            success: (res) => {
-              const lat = parseFloat(res && (res.latitude || res.lat))
-              const lon = parseFloat(res && (res.longitude || res.lon || res.lng))
-              if (isNaN(lat) || isNaN(lon)) {
-                reject(new Error('wx.getLocation returned invalid coordinates'))
-                return
-              }
-              resolve({ name: '当前位置', lat, lon })
-            },
-            fail: (error) => reject(error || new Error('wx.getLocation failed'))
-          })
-        } catch (error) {
-          reject(error)
-        }
-      })
-    }
-
-    const navigator = root.navigator
-    if (navigator && navigator.geolocation && typeof navigator.geolocation.getCurrentPosition === 'function') {
-      return new Promise((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            const coords = position && position.coords
-            const lat = parseFloat(coords && coords.latitude)
-            const lon = parseFloat(coords && coords.longitude)
-            if (isNaN(lat) || isNaN(lon)) {
-              reject(new Error('navigator.geolocation returned invalid coordinates'))
-              return
-            }
-            resolve({ name: '当前位置', lat, lon })
-          },
-          (error) => reject(error || new Error('navigator.geolocation failed')),
-          { enableHighAccuracy: false, timeout: 5000, maximumAge: 300000 }
-        )
-      })
-    }
-
-    return Promise.reject(new Error('location API unavailable'))
+    return null
   },
 
   runSuzhouDemo() {
@@ -2114,10 +2753,12 @@ export default {
       this.setData({
         requestStatus: 'location unresolved',
         diagnosticLine: 'no place',
-        assistantLine: '我需要知道你的位置，才能查当前星图。请告诉我城市，或允许获取当前位置。'
+        assistantLine: '需要位置：请说城市名。'
       })
       return
     }
+    const requestId = this.skyRequestId + 1
+    this.skyRequestId = requestId
     this.applyMode('loading')
     this.setData({
       currentPlace: place,
@@ -2137,8 +2778,9 @@ export default {
     })
 
     try {
-      const response = await this.fetchSkyChart(payload)
+      const response = await this.fetchSkyChart(payload, requestId)
       const chart = await response.json()
+      if (!this.pageActive || requestId !== this.skyRequestId) return
       console.log('[SkyMate] sky chart result', chart)
       this.showChartResult({
         chart,
@@ -2148,18 +2790,21 @@ export default {
         query: payload
       })
     } catch (error) {
+      if (!this.pageActive || requestId !== this.skyRequestId) return
       console.log('[SkyMate] sky chart failed', error || {})
       this.showFallback(place.name, errorText(error))
     }
   },
 
-  async fetchSkyChart(payload) {
+  async fetchSkyChart(payload, requestId) {
+    const isCurrent = () => this.pageActive && (!requestId || requestId === this.skyRequestId)
     console.log('[SkyMate] sky fetch start', {
       url: SKY_CHART_ENDPOINT,
       lat: payload.lat,
       lon: payload.lon,
       total_limit: payload.total_limit
     })
+    if (!isCurrent()) throw new Error('stale sky request')
     this.setData({
       requestStatus: 'fetch',
       diagnosticLine: `POST ${payload.lat},${payload.lon}`
@@ -2176,9 +2821,11 @@ export default {
       })
 
       if (!response.ok) throw new Error(await responseErrorText(response, 'HTTP'))
+      if (!isCurrent()) throw new Error('stale sky request')
       this.setData({ requestStatus: `http ${response.status}`, diagnosticLine: 'POST ok' })
       return response
     } catch (firstError) {
+      if (!isCurrent()) throw firstError
       console.log('[SkyMate] sky fetch primary failed', errorText(firstError))
       this.setData({ requestStatus: 'retry POST', diagnosticLine: shortText(errorText(firstError), 62) })
     }
@@ -2199,6 +2846,7 @@ export default {
       },
       body: JSON.stringify(retryPayload)
     })
+    if (!isCurrent()) throw new Error('stale sky request')
 
     if (!retryResponse.ok) {
       const retryError = await responseErrorText(retryResponse, 'retry HTTP')
@@ -2210,6 +2858,7 @@ export default {
         method: 'GET',
         headers: { 'X-User-Agent': 'Rizon/1.0' }
       })
+      if (!isCurrent()) throw new Error('stale sky request')
 
       if (!getResponse.ok) throw new Error(await responseErrorText(getResponse, 'GET HTTP'))
       this.setData({ requestStatus: `GET ${getResponse.status}`, diagnosticLine: 'GET ok' })
@@ -2223,7 +2872,7 @@ export default {
   showChartResult(options) {
     const chart = options && options.chart
     const providedTargets = options && options.targets
-    const locationName = text(options && options.locationName, '当前位置')
+    const locationName = text(options && options.locationName, '观测位置')
     const targets = providedTargets ? providedTargets.map((item, index) => normalizeTarget(item, index)) : pickTargets(chart)
     const skyObjects = collectSkyObjects(chart || providedTargets, targets)
     const first = targets[0] || FALLBACK_TARGETS[0]
@@ -2232,15 +2881,16 @@ export default {
     const generatedAt = safeGeneratedAt(readChartTimeValue(chart))
     const topMetaLine = createTopMetaLine(generatedAt)
     const observationMetaLine = createObservationMetaLine(locationName, generatedAt)
-    const verdict = '推荐观测列表'
+    const verdict = '今晚推荐'
     const condition = '城市里优先看亮星、行星和月亮；深空目标更适合望远镜或暗处。'
     const pageData = Object.assign({}, this.data, {
       locationName,
       topMetaLine,
       observationMetaLine,
-      verdict,
+      verdict: displayText(verdict, 12),
       condition,
       visibleObjects: targets,
+      rawSkyObjects: skyObjects,
       selectedObject: first
     })
     const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
@@ -2258,6 +2908,7 @@ export default {
     this.setData(Object.assign({
       currentPlace: place,
       visibleObjects: targets,
+      rawSkyObjects: skyObjects,
       selectedKey: first.key,
       selectedIndex: 0,
       selectedObject: first,
@@ -2266,16 +2917,16 @@ export default {
       skyKnowledgeBase: knowledge,
       topMetaLine,
       observationMetaLine,
-      verdict,
+      verdict: displayText(verdict, 12),
       condition,
       assistantLine: '已筛出最适合普通用户看的目标。',
-      requestStatus: `success ${source}`,
+      requestStatus: displayMeta(`ok ${source}`, 18),
       diagnosticLine: `targets=${targets.length} sky=${skyObjects.length}`
     }, createHudSlots(targets, first.key), createSelectedSkyOverlay(first, 0), createDetailState(first, {
       locationName,
       topMetaLine,
       observationMetaLine,
-      verdict,
+      verdict: displayText(verdict, 12),
       condition
     })))
     this.applyMode('overview')
@@ -2286,16 +2937,17 @@ export default {
     const generatedAt = Date.now()
     const topMetaLine = createTopMetaLine(generatedAt)
     const observationMetaLine = createObservationMetaLine(locationName, generatedAt)
-    const verdict = '推荐观测列表'
-    const condition = '下面是一般情况下较容易尝试的亮目标，不代表当前位置和当前时间的精确结果。'
+    const verdict = '本地推荐'
+    const condition = '下面是一般情况下较容易尝试的亮目标，不代表观测位置和当前时间的精确结果。'
     const fallbackPlace = this.data.currentPlace || { name: locationName }
     const pageData = Object.assign({}, this.data, {
       locationName,
       topMetaLine,
       observationMetaLine,
-      verdict,
+      verdict: displayText(verdict, 12),
       condition,
       visibleObjects: FALLBACK_TARGETS,
+      rawSkyObjects: FALLBACK_TARGETS,
       selectedObject: FALLBACK_TARGETS[0]
     })
     const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
@@ -2309,6 +2961,7 @@ export default {
     }, pageData)
     this.setData(Object.assign({
       visibleObjects: FALLBACK_TARGETS,
+      rawSkyObjects: FALLBACK_TARGETS,
       selectedKey: FALLBACK_TARGETS[0].key,
       selectedIndex: 0,
       selectedObject: FALLBACK_TARGETS[0],
@@ -2317,7 +2970,7 @@ export default {
       locationName,
       topMetaLine,
       observationMetaLine,
-      verdict,
+      verdict: displayText(verdict, 12),
       condition,
       assistantLine: '实时星图暂时不可用，下面只是非实时兜底建议。',
       requestStatus: 'fallback',
@@ -2326,7 +2979,7 @@ export default {
       locationName,
       topMetaLine,
       observationMetaLine,
-      verdict,
+      verdict: displayText(verdict, 12),
       condition
     })))
     this.applyMode('overview')
@@ -2334,16 +2987,19 @@ export default {
 
   openHome() {
     this.reportEvent('openHome')
+    this.clearPendingConfirm()
     this.applyMode('home')
   },
 
   openOverview() {
     this.reportEvent('openOverview')
-    this.applyMode('overview')
+    this.clearPendingConfirm()
+    this.restoreOverviewState()
   },
 
   openDetail() {
     this.reportEvent('openDetail')
+    this.clearPendingConfirm()
     const target = this.data.selectedObject || FALLBACK_TARGETS[0]
     const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
       selectedObject: target
@@ -2356,6 +3012,7 @@ export default {
 
   openLocate() {
     this.reportEvent('openLocate')
+    this.clearPendingConfirm()
     this.applyMode('locate')
   },
 
@@ -2363,7 +3020,7 @@ export default {
     const mode = this.data.mode
     this.reportEvent(`back:${mode}`)
     if (mode === 'detail' || mode === 'locate') {
-      this.applyMode('overview')
+      this.restoreOverviewState()
       return
     }
     if (mode === 'overview' || mode === 'chat' || mode === 'loading' || mode === 'error') {
@@ -2373,11 +3030,11 @@ export default {
     this.applyMode('home')
   },
 
-  confirmCurrent() {
+  activateSelection() {
     const mode = this.data.mode
-    this.reportEvent(`confirm:${mode}`)
+    this.reportEvent(`activate:${mode}`)
     if (mode === 'overview') {
-      this.applyMode('detail')
+      this.openDetail()
       return
     }
     if (mode === 'detail') {
@@ -2385,11 +3042,15 @@ export default {
       return
     }
     if (mode === 'locate') {
-      this.applyMode('detail')
+      this.openDetail()
       return
     }
     if (mode === 'chat') {
       this.startAsr()
+      return
+    }
+    if (mode === 'error') {
+      this.promptForCity('error')
       return
     }
     if (mode === 'home') {
@@ -2397,7 +3058,65 @@ export default {
     }
   },
 
+  confirmCurrent() {
+    this.activateSelection()
+  },
+
+  clearPendingConfirm() {
+    this.pendingConfirmToken += 1
+    if (this.pendingConfirmTimer) {
+      clearTimeout(this.pendingConfirmTimer)
+      this.pendingConfirmTimer = null
+    }
+  },
+
+  queueDelayedActivation(reason) {
+    this.clearPendingConfirm()
+    const token = this.pendingConfirmToken
+    this.reportEvent(`${reason || 'confirm'}:pending`)
+    this.pendingConfirmTimer = setTimeout(() => {
+      if (!this.pageActive || token !== this.pendingConfirmToken) return
+      this.pendingConfirmTimer = null
+      this.activateSelection()
+    }, 160)
+  },
+
+  queueOverviewConfirm(event) {
+    if (event && event.stopPropagation) event.stopPropagation()
+    if (event && event.preventDefault) event.preventDefault()
+    if (this.data.mode !== 'overview') return
+    this.queueDelayedActivation('overviewPress')
+  },
+
+  restoreOverviewState() {
+    const rawObjects = this.data.rawSkyObjects && this.data.rawSkyObjects.length
+      ? this.data.rawSkyObjects
+      : (this.data.visibleObjects && this.data.visibleObjects.length ? this.data.visibleObjects : FALLBACK_TARGETS)
+    const visibleObjects = this.data.visibleObjects && this.data.visibleObjects.length
+      ? this.data.visibleObjects
+      : rawObjects
+    const requestedKey = this.data.selectedKey || (this.data.selectedObject && this.data.selectedObject.key)
+    const selected = visibleObjects.find(item => item.key === requestedKey) ||
+      rawObjects.find(item => item.key === requestedKey) ||
+      visibleObjects[0] ||
+      rawObjects[0] ||
+      FALLBACK_TARGETS[0]
+    const selectedIndex = Math.max(0, visibleObjects.findIndex(item => item.key === selected.key))
+    this.setData(Object.assign({
+      mode: 'overview',
+      pageTag: '今晚推荐',
+      rawSkyObjects: rawObjects,
+      visibleObjects,
+      selectedObject: selected,
+      selectedKey: selected.key,
+      selectedIndex,
+      skyObjects: createSkyChartObjects(rawObjects, selected.key)
+    }, createHudSlots(visibleObjects, selected.key), createSelectedSkyOverlay(selected, selectedIndex)))
+  },
+
   moveSelection(offset) {
+    const mode = this.data.mode
+    if (mode !== 'overview' && mode !== 'detail' && mode !== 'locate') return
     const targets = this.data.visibleObjects && this.data.visibleObjects.length ? this.data.visibleObjects : FALLBACK_TARGETS
     const currentIndex = Math.max(0, targets.findIndex(item => item.key === this.data.selectedKey))
     const nextIndex = (currentIndex + offset + targets.length) % targets.length
@@ -2412,7 +3131,10 @@ export default {
       selectedIndex: nextIndex,
       selectedKey: target.key,
       selectedObject: target,
-      skyObjects: createSkyChartObjects(this.data.skyObjects, target.key),
+      skyObjects: createSkyChartObjects(
+        this.data.rawSkyObjects && this.data.rawSkyObjects.length ? this.data.rawSkyObjects : targets,
+        target.key
+      ),
       skyKnowledgeBase: knowledge,
       detailChatHistory: []
     }, createHudSlots(targets, target.key), createSelectedSkyOverlay(target, nextIndex), createDetailState(target, this.data)))
@@ -2420,9 +3142,11 @@ export default {
 
   selectObject(event) {
     if (event && event.stopPropagation) event.stopPropagation()
-    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {}
-    const key = dataset.key || this.data.selectedKey
-    const allObjects = (this.data.visibleObjects || []).concat(this.data.skyObjects || [])
+    const currentTarget = event && event.currentTarget
+    const dataset = (currentTarget && currentTarget.dataset) || {}
+    const attributes = (currentTarget && currentTarget.attributes) || {}
+    const key = dataset.key || attributes['data-key'] || this.data.selectedKey
+    const allObjects = (this.data.visibleObjects || []).concat(this.data.rawSkyObjects || [])
     const target = allObjects.find(item => item.key === key) || this.data.visibleObjects[0] || FALLBACK_TARGETS[0]
     const index = Math.max(0, this.data.visibleObjects.findIndex(item => item.key === target.key))
     this.reportEvent(`selectObject:${key}`)
@@ -2435,7 +3159,10 @@ export default {
       selectedIndex: index,
       selectedKey: target.key,
       selectedObject: target,
-      skyObjects: createSkyChartObjects(this.data.skyObjects, target.key),
+      skyObjects: createSkyChartObjects(
+        this.data.rawSkyObjects && this.data.rawSkyObjects.length ? this.data.rawSkyObjects : this.data.visibleObjects,
+        target.key
+      ),
       skyKnowledgeBase: knowledge,
       detailChatHistory: []
     }, createHudSlots(this.data.visibleObjects, target.key), createSelectedSkyOverlay(target, index), createDetailState(target, this.data)))
@@ -2455,7 +3182,7 @@ export default {
       </view>
     </view>
 
-    <view class="sky-panel" ink:if="{{ isOverview }}" bindtap="openDetail">
+    <view class="sky-panel" ink:if="{{ mode === 'overview' }}">
       <text class="sky-panel-title">实时星图</text>
       <text class="sky-panel-meta">地平坐标 · {{ objectCount }} 个推荐</text>
       <view class="sky-map">
@@ -2468,101 +3195,78 @@ export default {
         <text class="cardinal cardinal-e">E</text>
         <text class="cardinal cardinal-s">S</text>
         <text class="cardinal cardinal-w">W</text>
-        <text
+        <view
           class="sky-target {{ item.typeClass }} {{ item.selectedClass }}"
           style="{{ item.style }}"
           ink:for="{{ skyObjects }}"
           ink:for-item="item"
           ink:key="key"
-          data-key="{{ item.key }}"
-          catchtap="selectObject"
-        ></text>
-        <text
-          class="sky-target-label"
-          style="{{ item.labelStyle }}"
-          ink:for="{{ skyObjects }}"
-          ink:for-item="item"
-          ink:key="key"
-        >{{ item.name }}</text>
+        ></view>
         <text
           class="selected-sky-marker {{ selectedObject.typeClass }}"
           style="{{ selectedSkyMarkerStyle }}"
         ></text>
-        <text
-          class="selected-sky-name"
-          style="{{ selectedSkyLabelStyle }}"
-        >{{ selectedObject.name }}</text>
       </view>
-      <text class="sky-label">{{ selectedObject.name }}</text>
-      <text class="sky-meta">{{ selectedObject.direction }} · {{ selectedObject.altitude }}</text>
     </view>
 
-    <view class="content home-panel" ink:if="{{ isHome }}">
-      <text class="kicker">观星助手</text>
-      <text class="headline">SkyMate 帮你看今晚星空</text>
-      <text class="body">我会读取 GPS 位置，判断今晚是否值得出门，并标出月亮、行星和亮星的大致方向。</text>
+    <view class="content home-panel" ink:if="{{ mode === 'home' }}">
+      <text class="kicker">语音观星</text>
+      <text class="headline">说出城市或观测问题</text>
+      <text class="body">例如：杭州 / 今晚苏州能看到什么 / 上海今晚能看金星吗。</text>
       <view class="button-grid home-actions">
-        <button class="btn primary gps-btn" bindtap="runCurrentLocation">使用当前位置</button>
+        <button class="btn primary" bindtap="runSuzhouDemo" tabindex="0">示例城市</button>
       </view>
     </view>
 
-    <view class="content chat-panel" ink:if="{{ isChat }}">
+    <view class="content chat-panel" ink:if="{{ mode === 'chat' }}">
       <text class="kicker">语音查询</text>
-      <text class="headline">说出城市和问题</text>
-      <text class="body">比如：今晚苏州能看到什么，或厦门能不能看金星。</text>
+      <text class="headline">说出城市或问题</text>
+      <text class="body">例如：杭州 / 今晚苏州能看到什么 / 上海今晚能看金星吗。</text>
       <view class="asr-guide">
         <text class="guide-dot"></text>
         <text class="guide-text">{{ assistantLine }}</text>
       </view>
-      <view class="button-grid">
-        <button class="btn primary" bindtap="startAsr">开始听</button>
-        <button class="btn secondary" bindtap="locateOnly">定位</button>
-        <button class="btn ghost" bindtap="openHome">返回</button>
-      </view>
       <text class="location-readout">{{ locationLine }}</text>
     </view>
 
-    <view class="content loading-panel" ink:if="{{ isLoading }}">
+    <view class="content loading-panel" ink:if="{{ mode === 'loading' }}">
       <text class="headline">正在查星空</text>
       <text class="body">{{ assistantLine }}</text>
       <text class="debug-line">{{ diagnosticLine }}</text>
     </view>
 
-    <view class="content overview-panel" ink:if="{{ isOverview }}">
+    <view class="content overview-panel" ink:if="{{ mode === 'overview' }}">
       <text class="headline">{{ verdict }}</text>
       <text class="body">{{ observationMetaLine }}</text>
       <view class="target-row">
-        <button class="target-btn {{ target0Class }}" data-key="{{ target0Key }}" catchtap="selectObject">
+        <button class="target-btn {{ target0Class }}" bindtap="queueOverviewConfirm" tabindex="0">
           <text class="target-name">{{ target0Name }}</text>
           <text class="target-meta">{{ target0Meta }}</text>
         </button>
-        <button class="target-btn {{ target1Class }}" data-key="{{ target1Key }}" catchtap="selectObject">
+        <button class="target-btn {{ target1Class }}" bindtap="queueOverviewConfirm" tabindex="1">
           <text class="target-name">{{ target1Name }}</text>
           <text class="target-meta">{{ target1Meta }}</text>
         </button>
-        <button class="target-btn {{ target2Class }}" data-key="{{ target2Key }}" catchtap="selectObject">
+        <button class="target-btn {{ target2Class }}" bindtap="queueOverviewConfirm" tabindex="2">
           <text class="target-name">{{ target2Name }}</text>
           <text class="target-meta">{{ target2Meta }}</text>
         </button>
-        <button class="target-btn {{ target3Class }}" data-key="{{ target3Key }}" catchtap="selectObject">
+        <button class="target-btn {{ target3Class }}" bindtap="queueOverviewConfirm" tabindex="3">
           <text class="target-name">{{ target3Name }}</text>
           <text class="target-meta">{{ target3Meta }}</text>
         </button>
-        <button class="target-btn {{ target4Class }}" data-key="{{ target4Key }}" catchtap="selectObject">
+        <button class="target-btn {{ target4Class }}" bindtap="queueOverviewConfirm" tabindex="4">
           <text class="target-name">{{ target4Name }}</text>
           <text class="target-meta">{{ target4Meta }}</text>
         </button>
       </view>
-      <view class="button-grid compact overview-actions">
-        <button class="btn ghost" bindtap="openHome">退出</button>
-      </view>
     </view>
 
-    <view class="content detail-panel" ink:if="{{ isDetail }}">
+    <view class="content detail-panel" ink:if="{{ mode === 'detail' }}">
       <view class="detail-layout">
         <view class="detail-left">
           <text class="kicker">{{ selectedObject.type }}</text>
-          <text class="headline">{{ selectedObject.name }}</text>
+      <text class="headline">{{ selectedObject.displayName }}</text>
           <text class="body detail-meta">{{ observationMetaLine }}</text>
           <view class="detail-block">
             <text class="detail-label">简介</text>
@@ -2570,7 +3274,7 @@ export default {
           </view>
           <view class="detail-block intro-block">
             <text class="detail-label">快速找法</text>
-            <text class="detail-text">{{ selectedObject.locate }}</text>
+            <text class="detail-text">{{ detailLocate }}</text>
           </view>
         </view>
         <view class="detail-agent">
@@ -2579,27 +3283,26 @@ export default {
           <text class="detail-agent-question">{{ detailQuestion }}</text>
           <text class="detail-agent-answer">{{ detailAnswer }}</text>
           <view class="button-grid compact detail-agent-actions">
-            <button class="btn primary detail-talk-btn" bindtap="startDetailAsr">开始对话</button>
+            <button class="btn primary detail-talk-btn" bindtap="startDetailAsr" tabindex="0">开始对话</button>
           </view>
         </view>
       </view>
     </view>
 
-    <view class="content locate-panel" ink:if="{{ isLocate }}">
+    <view class="content locate-panel" ink:if="{{ mode === 'locate' }}">
       <text class="headline">朝 {{ selectedObject.direction }} 看</text>
       <text class="body">{{ selectedObject.locate }}</text>
       <view class="button-grid compact">
-        <button class="btn secondary" bindtap="openDetail">详情</button>
-        <button class="btn ghost" bindtap="openOverview">总览</button>
+        <button class="btn secondary" bindtap="openDetail" tabindex="0">详情</button>
+        <button class="btn ghost" bindtap="openOverview" tabindex="1">总览</button>
       </view>
     </view>
 
-    <view class="content error-panel" ink:if="{{ isError }}">
+    <view class="content error-panel" ink:if="{{ mode === 'error' }}">
       <text class="headline">暂时查不到实时数据</text>
       <text class="body">可以先按一般情况看月亮、亮星和行星。</text>
       <view class="button-grid compact">
-        <button class="btn primary" bindtap="runCurrentLocation">重试定位</button>
-        <button class="btn secondary" bindtap="runSuzhouDemo">示例城市</button>
+        <button class="btn primary" bindtap="runSuzhouDemo" tabindex="0">示例城市</button>
       </view>
     </view>
 
@@ -2612,2256 +3315,77 @@ export default {
 
 <style>
 .shell {
-  width: 448px;
-  min-height: 150px;
-  box-sizing: border-box;
-  padding: 7px 9px;
-  overflow: hidden;
-  color: #f6f7ec;
-  background:
-    radial-gradient(circle at 8% 12%, rgba(117, 255, 149, 0.22), transparent 25%),
-    radial-gradient(circle at 84% 18%, rgba(255, 213, 104, 0.16), transparent 24%),
-    linear-gradient(145deg, #020403 0%, #09100d 48%, #16180d 100%);
-  border: 1px solid rgba(154, 255, 177, 0.30);
-  border-radius: 14px;
-}
-
-.topbar {
-  display: flex;
-  flex-direction: row;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 4px;
-}
-
-.brand {
-  display: block;
-  color: #ffffff;
-  font-size: 20px;
-  line-height: 21px;
-  font-weight: 900;
-  letter-spacing: -1px;
-}
-
-.subtitle {
-  display: block;
-  color: rgba(246, 247, 236, 0.58);
-  font-size: 10px;
-  line-height: 12px;
-}
-
-.right-stack {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-}
-
-.pill {
-  min-width: 44px;
-  height: 18px;
-  line-height: 18px;
-  text-align: center;
-  color: #baffc6;
-  background: rgba(93, 255, 126, 0.10);
-  border: 1px solid rgba(93, 255, 126, 0.42);
-  border-radius: 11px;
-  font-size: 10px;
-  font-weight: 800;
-}
-
-.diag {
-  display: block;
-  max-width: 172px;
-  margin-top: 2px;
-  overflow: hidden;
-  color: rgba(158, 255, 177, 0.64);
-  font-size: 8px;
-  line-height: 10px;
-  text-align: right;
-}
-
-.panel {
-  display: block;
-}
-
-.hero,
-.loading-row {
-  display: flex;
-  flex-direction: row;
-  gap: 8px;
-  align-items: center;
-}
-
-.mini-sky {
-  position: relative;
-  width: 76px;
-  height: 46px;
-  flex-shrink: 0;
-  border-radius: 12px;
-  background: radial-gradient(circle at 55% 68%, rgba(255, 211, 99, 0.30), transparent 12%), #030504;
-  border: 1px solid rgba(246, 247, 236, 0.12);
-}
-
-.dot {
-  position: absolute;
-  width: 4px;
-  height: 4px;
-  border-radius: 2px;
-  background: #f6f7ec;
-}
-
-.d1 {
-  left: 22px;
-  top: 17px;
-}
-
-.d2 {
-  right: 20px;
-  top: 14px;
-}
-
-.d3 {
-  left: 45px;
-  top: 38px;
-}
-
-.glow {
-  position: absolute;
-  left: 53px;
-  top: 35px;
-  width: 10px;
-  height: 10px;
-  border-radius: 5px;
-  background: #ffd46b;
-  box-shadow: 0 0 16px rgba(255, 212, 107, 0.8);
-}
-
-.hero-copy {
-  flex: 1;
-}
-
-.kicker {
-  display: block;
-  color: #aef7ba;
-  font-size: 10px;
-  line-height: 12px;
-  font-weight: 800;
-}
-
-.headline {
-  display: block;
-  color: #ffffff;
-  font-size: 17px;
-  line-height: 19px;
-  font-weight: 900;
-}
-
-.headline.small {
-  font-size: 13px;
-  line-height: 15px;
-}
-
-.body {
-  display: block;
-  margin-top: 3px;
-  color: rgba(246, 247, 236, 0.72);
-  font-size: 9px;
-  line-height: 11px;
-}
-
-.button-grid {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 5px;
-}
-
-.button-grid.slim {
-  margin-top: 4px;
-}
-
-.btn {
-  min-width: 57px;
-  height: 21px;
-  line-height: 21px;
-  padding: 0 6px;
-  color: #f6f7ec;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(246, 247, 236, 0.16);
-  border-radius: 8px;
-  font-size: 9px;
-  font-weight: 900;
-}
-
-.primary {
-  color: #031006;
-  background: #75ff8c;
-  border-color: rgba(117, 255, 140, 0.84);
-}
-
-.secondary {
-  color: #dfffe5;
-  background: rgba(117, 255, 140, 0.10);
-  border-color: rgba(117, 255, 140, 0.40);
-}
-
-.ghost {
-  color: rgba(246, 247, 236, 0.78);
-}
-
-.loader {
-  width: 26px;
-  height: 26px;
-  border-radius: 13px;
-  border: 2px solid rgba(117, 255, 140, 0.25);
-  background: radial-gradient(circle, rgba(117, 255, 140, 0.8), transparent 35%);
-}
-
-.verdict {
-  padding: 4px 7px;
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(246, 247, 236, 0.10);
-}
-
-.target-list {
-  display: flex;
-  flex-direction: row;
-  gap: 5px;
-  margin-top: 5px;
-}
-
-.target-card {
-  width: 82px;
-  min-height: 39px;
-  padding: 4px;
-  text-align: left;
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(246, 247, 236, 0.13);
-}
-
-.target-card.planet {
-  border-color: rgba(255, 214, 111, 0.55);
-}
-
-.target-card.star {
-  border-color: rgba(160, 225, 255, 0.48);
-}
-
-.target-card.moon {
-  border-color: rgba(246, 247, 236, 0.62);
-}
-
-.target-name {
-  display: block;
-  color: #ffffff;
-  font-size: 12px;
-  line-height: 14px;
-  font-weight: 900;
-}
-
-.target-meta {
-  display: block;
-  margin-top: 3px;
-  color: rgba(246, 247, 236, 0.64);
-  font-size: 8px;
-  line-height: 10px;
-}
-
-.metric-row {
-  display: flex;
-  flex-direction: row;
-  gap: 5px;
-  margin: 5px 0;
-}
-
-.metric {
-  flex: 1;
-  padding: 4px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.metric-label,
-.metric-value {
-  display: block;
-  font-size: 9px;
-  line-height: 12px;
-}
-
-.metric-label {
-  color: rgba(246, 247, 236, 0.50);
-}
-
-.metric-value {
-  color: #ffffff;
-  font-weight: 900;
-}
-
-.status {
-  margin-top: 4px;
-  padding-top: 2px;
-  border-top: 1px solid rgba(246, 247, 236, 0.10);
-}
-
-.debug-line {
-  display: block;
-  max-width: 410px;
-  overflow: hidden;
-  color: rgba(246, 247, 236, 0.66);
-  font-size: 8px;
-  line-height: 10px;
-}
-
-.status-line {
-  display: none;
-}
-
-.debug-line {
-  color: rgba(158, 255, 177, 0.62);
-}
-
-/* Deprecated experimental HUD skin. Kept inert because the template now uses .shell.card. */
-.shell.hud {
-  position: relative;
-  width: 448px;
-  height: 150px;
-  min-height: 150px;
-  padding: 0;
-  overflow: hidden;
-  color: #dfffe5;
-  background:
-    radial-gradient(circle at 78% 44%, rgba(83, 255, 125, 0.14), transparent 33%),
-    linear-gradient(135deg, #020604 0%, #050d09 48%, #020403 100%);
-  border: 1px solid rgba(76, 255, 116, 0.32);
-  border-radius: 16px;
-  font-family: Arial, sans-serif;
-}
-
-.scanline,
-.vignette {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 448px;
-  height: 150px;
-  pointer-events: none;
-}
-
-.scanline {
-  opacity: 0.08;
-  background: repeating-linear-gradient(to bottom, rgba(76, 255, 116, 0.08) 0, rgba(76, 255, 116, 0.08) 1px, transparent 1px, transparent 8px);
-}
-
-.vignette {
-  box-shadow:
-    inset 0 0 18px rgba(76, 255, 116, 0.08),
-    inset 0 0 58px rgba(0, 0, 0, 0.90);
-}
-
-.corner {
-  position: absolute;
-  width: 16px;
-  height: 16px;
-  border-color: rgba(76, 255, 116, 0.64);
-  z-index: 7;
-}
-
-.corner-tl {
-  left: 10px;
-  top: 10px;
-  border-left: 2px solid;
-  border-top: 2px solid;
-}
-
-.corner-tr {
-  right: 10px;
-  top: 10px;
-  border-right: 2px solid;
-  border-top: 2px solid;
-}
-
-.corner-bl {
-  left: 10px;
-  bottom: 10px;
-  border-left: 2px solid;
-  border-bottom: 2px solid;
-}
-
-.corner-br {
-  right: 10px;
-  bottom: 10px;
-  border-right: 2px solid;
-  border-bottom: 2px solid;
-}
-
-.hud-panel {
-  position: absolute;
-  top: 12px;
-  z-index: 5;
-}
-
-.panel-left {
-  left: 18px;
-  width: 180px;
-  text-align: left;
-}
-
-.panel-right {
-  right: 18px;
-  width: 128px;
-  text-align: right;
-}
-
-.shell.hud .brand,
-.shell.hud .meta,
-.shell.hud .target-name,
-.shell.hud .target-line {
-  display: block;
-  white-space: nowrap;
-}
-
-.shell.hud .brand {
-  color: #5dff7c;
-  font-size: 18px;
-  line-height: 20px;
-  font-weight: 900;
-  letter-spacing: -0.5px;
-}
-
-.shell.hud .meta {
-  max-width: 180px;
-  overflow: hidden;
-  color: rgba(198, 255, 210, 0.62);
-  font-size: 9px;
-  line-height: 11px;
-}
-
-.shell.hud .meta.strong {
-  color: #5dff7c;
-  font-size: 10px;
-  font-weight: 900;
-}
-
-.shell.hud .state-pill {
-  position: absolute;
-  right: 18px;
-  top: 34px;
-  width: 86px;
-  height: 18px;
-  line-height: 18px;
-  text-align: center;
-  border: 1px solid rgba(93, 255, 124, 0.48);
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.72);
-  color: #5dff7c;
-  font-size: 9px;
-  font-weight: 900;
-  box-shadow: 0 0 10px rgba(93, 255, 124, 0.14);
-  z-index: 6;
-}
-
-.chart {
-  position: absolute;
-  left: 272px;
-  top: 56px;
-  width: 146px;
-  height: 62px;
-  overflow: hidden;
-  border: 1px solid rgba(93, 255, 124, 0.38);
-  border-radius: 10px;
-  background:
-    radial-gradient(circle at 50% 52%, rgba(93, 255, 124, 0.09), rgba(0, 0, 0, 0) 52%),
-    rgba(0, 0, 0, 0.36);
-  z-index: 2;
-}
-
-.grid {
-  position: absolute;
-  background: rgba(93, 255, 124, 0.12);
-}
-
-.grid-v {
-  top: 0;
-  width: 1px;
-  height: 62px;
-}
-
-.grid-h {
-  left: 0;
-  width: 146px;
-  height: 1px;
-}
-
-.g1 { left: 36px; }
-.g2 { left: 73px; }
-.g3 { left: 109px; }
-.g4 { top: 21px; }
-.g5 { top: 42px; }
-
-.horizon {
-  position: absolute;
-  left: 20px;
-  top: 10px;
-  width: 106px;
-  height: 42px;
-  border: 1px solid rgba(93, 255, 124, 0.24);
-  border-radius: 53px / 21px;
-}
-
-.axis {
-  position: absolute;
-  background: rgba(93, 255, 124, 0.16);
-}
-
-.axis-x {
-  left: 22px;
-  top: 31px;
-  width: 102px;
-  height: 1px;
-}
-
-.axis-y {
-  left: 73px;
-  top: 8px;
-  width: 1px;
-  height: 46px;
-}
-
-.bg-star {
-  position: absolute;
-  border-radius: 3px;
-  background: rgba(165, 255, 184, 0.45);
-  box-shadow: 0 0 4px rgba(93, 255, 124, 0.24);
-  z-index: 1;
-}
-
-.star {
-  position: absolute;
-  display: block;
-  min-width: 0;
-  padding: 0;
-  border-radius: 12px;
-  border: 1px solid #8dffa1;
-  background: rgba(93, 255, 124, 0.12);
-  box-shadow:
-    0 0 8px rgba(93, 255, 124, 0.62),
-    0 0 14px rgba(93, 255, 124, 0.24);
-  z-index: 4;
-}
-
-.star.planet {
-  border-color: #ffd965;
-  background: rgba(255, 217, 101, 0.18);
-  box-shadow: 0 0 12px rgba(255, 217, 101, 0.55);
-}
-
-.star.moon {
-  border-color: #f7ffe7;
-  background: rgba(247, 255, 231, 0.18);
-}
-
-.star.selected {
-  border-width: 2px;
-}
-
-.star-label {
-  position: absolute;
-  max-width: 42px;
-  overflow: hidden;
-  color: rgba(226, 255, 232, 0.78);
-  font-size: 7px;
-  line-height: 9px;
-  z-index: 5;
-}
-
-.focus-ring {
-  position: absolute;
-  border: 1px solid rgba(93, 255, 124, 0.56);
-  border-radius: 16px;
-  box-shadow: 0 0 12px rgba(93, 255, 124, 0.16);
-  z-index: 3;
-}
-
-.focus-dot {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 4px;
-  height: 4px;
-  margin-left: -2px;
-  margin-top: -2px;
-  border-radius: 2px;
-  background: #5dff7c;
-}
-
-.reticle {
-  position: absolute;
-  z-index: 3;
-}
-
-.reticle-circle {
-  left: 61px;
-  top: 20px;
-  width: 24px;
-  height: 24px;
-  border: 1px solid rgba(93, 255, 124, 0.30);
-  border-radius: 13px;
-}
-
-.reticle-h {
-  top: 32px;
-  width: 36px;
-  height: 1px;
-  background: rgba(93, 255, 124, 0.24);
-}
-
-.reticle-h.left { left: 18px; }
-.reticle-h.right { right: 18px; }
-
-.reticle-v {
-  left: 73px;
-  width: 1px;
-  height: 13px;
-  background: rgba(93, 255, 124, 0.24);
-}
-
-.reticle-v.top { top: 5px; }
-.reticle-v.bottom { bottom: 5px; }
-
-.mode-panel {
-  position: absolute;
-  left: 18px;
-  top: 48px;
-  width: 238px;
-  z-index: 6;
-}
-
-.overview-panel,
-.detail-panel,
-.locate-panel,
-.error-panel {
-  left: 18px;
-  top: 44px;
-  width: 238px;
-}
-
-.loading-panel {
-  left: 18px;
-  top: 52px;
-  width: 238px;
-}
-
-.shell.hud .headline {
-  display: block;
-  max-width: 238px;
-  max-height: 31px;
-  overflow: hidden;
-  color: #f7ffe7;
-  font-size: 15px;
-  line-height: 16px;
-  font-weight: 900;
-}
-
-.shell.hud .body,
-.shell.hud .debug-line {
-  display: block;
-  max-width: 228px;
-  max-height: 24px;
-  overflow: hidden;
-  color: rgba(218, 255, 224, 0.70);
-  font-size: 10px;
-  line-height: 12px;
-}
-
-.shell.hud .kicker {
-  display: block;
-  color: rgba(93, 255, 124, 0.82);
-  font-size: 9px;
-  line-height: 11px;
-  font-weight: 900;
-}
-
-.button-grid {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-top: 8px;
-}
-
-.button-grid.compact {
-  margin-top: 7px;
-}
-
-.shell.hud .btn {
-  min-width: 48px;
-  height: 20px;
-  line-height: 20px;
-  padding: 0 7px;
-  border-radius: 8px;
-  border: 1px solid rgba(93, 255, 124, 0.36);
-  background: rgba(0, 0, 0, 0.64);
-  color: #8dffa1;
-  font-size: 9px;
-  font-weight: 900;
-}
-
-.shell.hud .btn.primary {
-  background: rgba(93, 255, 124, 0.18);
-  border-color: rgba(93, 255, 124, 0.72);
-  color: #d8ffde;
-}
-
-.shell.hud .btn.ghost {
-  color: rgba(218, 255, 224, 0.70);
-  border-color: rgba(218, 255, 224, 0.20);
-}
-
-.shell.hud .target-card {
-  position: absolute;
-  right: 18px;
-  bottom: 12px;
-  width: 146px;
-  min-height: 22px;
-  padding: 3px 7px;
-  text-align: left;
-  border: 1px solid rgba(93, 255, 124, 0.28);
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.64);
-  z-index: 5;
-}
-
-.shell.hud .target-name {
-  color: #f7ffe7;
-  font-size: 10px;
-  line-height: 12px;
-  font-weight: 900;
-}
-
-.shell.hud .target-line {
-  max-width: 132px;
-  overflow: hidden;
-  color: rgba(141, 255, 161, 0.70);
-  font-size: 7px;
-  line-height: 8px;
-}
-
-.shell.hud .target-line.dim {
-  display: none;
-}
-
-/* Readable production card: overrides experimental HUD styles above. */
-.shell.card {
-  position: relative;
-  width: 448px;
-  height: 320px;
-  min-height: 320px;
-  box-sizing: border-box;
-  padding: 18px 20px 16px;
-  overflow: hidden;
-  color: #eef7ee;
-  background:
-    radial-gradient(circle at 88% 20%, rgba(101, 255, 151, 0.18), transparent 30%),
-    radial-gradient(circle at 12% 105%, rgba(255, 207, 91, 0.12), transparent 32%),
-    linear-gradient(135deg, #040706 0%, #08110d 58%, #030503 100%);
-  border: 1px solid rgba(98, 255, 139, 0.28);
-  border-radius: 18px;
-  font-family: Arial, sans-serif;
-}
-
-.top-row {
-  display: flex;
-  flex-direction: row;
-  justify-content: space-between;
-  align-items: flex-start;
-}
-
-.shell.card .brand {
-  display: block;
-  color: #ffffff;
-  font-size: 24px;
-  line-height: 26px;
-  font-weight: 900;
-  letter-spacing: -0.6px;
-}
-
-.shell.card .meta {
-  display: block;
-  max-width: 280px;
-  overflow: hidden;
-  color: rgba(238, 247, 238, 0.58);
-  font-size: 12px;
-  line-height: 15px;
-}
-
-.status-pill {
-  display: block;
-  height: 26px;
-  line-height: 26px;
-  padding: 0 13px;
-  border: 1px solid rgba(98, 255, 139, 0.46);
-  border-radius: 14px;
-  color: #8dffa3;
-  background: rgba(98, 255, 139, 0.08);
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.content {
-  position: absolute;
-  left: 20px;
-  top: 86px;
-  width: 262px;
-}
-
-.shell.card .headline {
-  display: block;
-  max-width: 262px;
-  max-height: 72px;
-  overflow: hidden;
-  color: #ffffff;
-  font-size: 26px;
-  line-height: 30px;
-  font-weight: 900;
-}
-
-.shell.card .body {
-  display: block;
-  max-width: 262px;
-  max-height: 72px;
-  margin-top: 8px;
-  overflow: hidden;
-  color: rgba(238, 247, 238, 0.70);
-  font-size: 14px;
-  line-height: 18px;
-}
-
-.shell.card .kicker {
-  display: block;
-  color: #8dffa3;
-  font-size: 12px;
-  line-height: 15px;
-  font-weight: 800;
-}
-
-.button-grid,
-.button-grid.compact {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 16px;
-}
-
-.shell.card .btn {
-  min-width: 66px;
-  height: 34px;
-  line-height: 34px;
-  padding: 0 13px;
-  border: 1px solid rgba(238, 247, 238, 0.16);
-  border-radius: 14px;
-  color: #e8f7e9;
-  background: rgba(255, 255, 255, 0.06);
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.shell.card .btn.primary {
-  color: #061208;
-  background: #77ff91;
-  border-color: #77ff91;
-}
-
-.shell.card .btn.secondary {
-  color: #9dffaf;
-  background: rgba(119, 255, 145, 0.09);
-  border-color: rgba(119, 255, 145, 0.35);
-}
-
-.shell.card .btn.ghost {
-  color: rgba(238, 247, 238, 0.72);
-}
-
-.target-row {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 16px;
-}
-
-.target-btn {
-  width: 180px;
-  height: 34px;
-  line-height: 34px;
-  padding: 0 12px;
-  overflow: hidden;
-  text-align: left;
-  border: 1px solid rgba(119, 255, 145, 0.34);
-  border-radius: 14px;
-  color: #eaffed;
-  background: rgba(119, 255, 145, 0.08);
-  font-size: 13px;
-  font-weight: 900;
-}
-
-.target-btn.planet {
-  border-color: rgba(255, 214, 111, 0.58);
-  color: #ffe18a;
-  background: rgba(255, 214, 111, 0.10);
-}
-
-.target-btn.selected {
-  background: rgba(119, 255, 145, 0.18);
-}
-
-.bottom-row {
-  position: absolute;
-  left: 20px;
-  right: 20px;
-  bottom: 16px;
-  display: flex;
-  flex-direction: row;
-  justify-content: space-between;
-  align-items: flex-end;
-}
-
-.hint {
-  display: block;
-  max-width: 260px;
-  overflow: hidden;
-  color: rgba(238, 247, 238, 0.38);
-  font-size: 11px;
-  line-height: 14px;
-}
-
-.shell.card .mini-sky {
-  position: absolute;
-  right: 20px;
-  top: 86px;
-  width: 118px;
-  height: 118px;
-  flex-shrink: 0;
-  border: 1px solid rgba(119, 255, 145, 0.18);
-  border-radius: 24px;
-  background:
-    radial-gradient(circle at 50% 50%, rgba(119, 255, 145, 0.13), transparent 52%),
-    rgba(0, 0, 0, 0.22);
-}
-
-.sky-dot {
-  position: absolute;
-  width: 6px;
-  height: 6px;
-  border-radius: 3px;
-  background: #dffff0;
-  box-shadow: 0 0 6px rgba(223, 255, 240, 0.55);
-}
-
-.sky-dot.d1 {
-  left: 28px;
-  top: 30px;
-}
-
-.sky-dot.d2 {
-  left: 62px;
-  top: 68px;
-}
-
-.sky-dot.d3 {
-  right: 24px;
-  top: 34px;
-}
-
-/* v4 production skin: compact smart-glasses card, 448 x 320. */
-.shell.card {
-  position: relative;
-  width: 448px;
-  height: 320px;
-  min-height: 320px;
-  box-sizing: border-box;
-  padding: 18px 18px 14px;
-  overflow: hidden;
-  color: #edf7ee;
-  background:
-    radial-gradient(circle at 82% 28%, rgba(88, 196, 122, 0.22), transparent 30%),
-    radial-gradient(circle at 14% 92%, rgba(223, 179, 86, 0.13), transparent 28%),
-    linear-gradient(142deg, #050706 0%, #0b1210 52%, #050706 100%);
-  border: 1px solid rgba(133, 220, 151, 0.24);
-  border-radius: 22px;
-  font-family: Arial, sans-serif;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
-}
-
-.top-row {
-  position: relative;
-  z-index: 5;
-  display: flex;
-  flex-direction: row;
-  justify-content: space-between;
-  align-items: flex-start;
-}
-
-.shell.card .brand {
-  display: block;
-  color: #ffffff;
-  font-size: 24px;
-  line-height: 26px;
-  font-weight: 900;
-  letter-spacing: -0.6px;
-}
-
-.shell.card .meta {
-  display: block;
-  max-width: 250px;
-  height: 17px;
-  overflow: hidden;
-  color: rgba(237, 247, 238, 0.58);
-  font-size: 12px;
-  line-height: 17px;
-}
-
-.status-pill {
-  display: block;
-  max-width: 96px;
-  height: 25px;
-  line-height: 25px;
-  padding: 0 11px;
-  overflow: hidden;
-  text-align: center;
-  border: 1px solid rgba(133, 220, 151, 0.42);
-  border-radius: 14px;
-  color: #bdf7c8;
-  background: rgba(133, 220, 151, 0.08);
-  font-size: 10px;
-  font-weight: 800;
-}
-
-.content {
-  position: absolute;
-  left: 18px;
-  top: 84px;
-  z-index: 4;
-  width: 252px;
-}
-
-.shell.card .headline {
-  display: block;
-  max-width: 252px;
-  max-height: 70px;
-  overflow: hidden;
-  color: #ffffff;
-  font-size: 25px;
-  line-height: 29px;
-  font-weight: 900;
-  letter-spacing: -0.3px;
-}
-
-.shell.card .body {
-  display: block;
-  max-width: 246px;
-  max-height: 58px;
-  margin-top: 8px;
-  overflow: hidden;
-  color: rgba(237, 247, 238, 0.72);
-  font-size: 13px;
-  line-height: 18px;
-}
-
-.shell.card .kicker {
-  display: block;
-  margin-bottom: 5px;
-  color: #9feeb0;
-  font-size: 12px;
-  line-height: 15px;
-  font-weight: 800;
-}
-
-.button-grid,
-.button-grid.compact {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 15px;
-}
-
-.shell.card .btn {
-  min-width: 66px;
-  height: 34px;
-  line-height: 34px;
-  padding: 0 13px;
-  border: 1px solid rgba(237, 247, 238, 0.16);
-  border-radius: 13px;
-  color: rgba(237, 247, 238, 0.88);
-  background: rgba(255, 255, 255, 0.055);
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.shell.card .btn.primary {
-  color: #041007;
-  background: #9ff0a7;
-  border-color: #9ff0a7;
-}
-
-.shell.card .btn.secondary {
-  color: #c5f7ce;
-  background: rgba(159, 240, 167, 0.09);
-  border-color: rgba(159, 240, 167, 0.33);
-}
-
-.shell.card .btn.ghost {
-  color: rgba(237, 247, 238, 0.70);
-}
-
-.target-row {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 13px;
-}
-
-.target-btn {
-  width: 196px;
-  height: 34px;
-  line-height: 34px;
-  padding: 0 12px;
-  overflow: hidden;
-  text-align: left;
-  border: 1px solid rgba(159, 240, 167, 0.30);
-  border-radius: 13px;
-  color: #edf7ee;
-  background: rgba(159, 240, 167, 0.075);
-  font-size: 13px;
-  font-weight: 900;
-}
-
-.target-btn.planet {
-  border-color: rgba(236, 197, 102, 0.55);
-  color: #f1d28a;
-  background: rgba(236, 197, 102, 0.11);
-}
-
-.target-btn.moon {
-  border-color: rgba(232, 238, 222, 0.50);
-  color: #f2f5e8;
-}
-
-.target-btn.selected {
-  background: rgba(159, 240, 167, 0.17);
-}
-
-.sky-panel {
-  position: absolute;
-  right: 18px;
-  top: 82px;
-  z-index: 3;
-  width: 130px;
-  height: 168px;
-  overflow: hidden;
-  border: 1px solid rgba(159, 240, 167, 0.18);
-  border-radius: 22px;
-  background:
-    radial-gradient(circle at 50% 42%, rgba(159, 240, 167, 0.10), transparent 42%),
-    rgba(0, 0, 0, 0.18);
-}
-
-.orbit {
-  position: absolute;
-  left: 18px;
-  top: 24px;
-  border: 1px solid rgba(159, 240, 167, 0.18);
-}
-
-.orbit.outer {
-  width: 94px;
-  height: 64px;
-  border-radius: 48px / 32px;
-}
-
-.orbit.inner {
-  left: 38px;
-  top: 37px;
-  width: 52px;
-  height: 36px;
-  border-radius: 27px / 19px;
-}
-
-.sky-panel .sky-dot {
-  position: absolute;
-  display: block;
-  width: 4px;
-  height: 4px;
-  border-radius: 2px;
-  background: #edf7ee;
-  box-shadow: 0 0 7px rgba(237, 247, 238, 0.58);
-}
-
-.sky-panel .d1 {
-  left: 26px;
-  right: auto;
-  top: 32px;
-}
-
-.sky-panel .d2 {
-  left: 88px;
-  right: auto;
-  top: 48px;
-}
-
-.sky-panel .d3 {
-  left: 61px;
-  right: auto;
-  top: 72px;
-}
-
-.target-glow {
-  position: absolute;
-  left: 48px;
-  top: 45px;
-  width: 34px;
-  height: 34px;
-  border-radius: 18px;
-  background: radial-gradient(circle, rgba(159, 240, 167, 0.78), rgba(159, 240, 167, 0.12) 42%, transparent 70%);
-  box-shadow: 0 0 20px rgba(159, 240, 167, 0.34);
-}
-
-.target-glow.planet {
-  background: radial-gradient(circle, rgba(236, 197, 102, 0.86), rgba(236, 197, 102, 0.16) 42%, transparent 70%);
-  box-shadow: 0 0 22px rgba(236, 197, 102, 0.36);
-}
-
-.target-glow.moon {
-  background: radial-gradient(circle, rgba(239, 243, 225, 0.9), rgba(239, 243, 225, 0.14) 42%, transparent 70%);
-  box-shadow: 0 0 22px rgba(239, 243, 225, 0.32);
-}
-
-.sky-label {
-  position: absolute;
-  left: 14px;
-  right: 14px;
-  bottom: 35px;
-  display: block;
-  height: 18px;
-  overflow: hidden;
-  color: #ffffff;
-  font-size: 14px;
-  line-height: 18px;
-  font-weight: 900;
-}
-
-.sky-meta {
-  position: absolute;
-  left: 14px;
-  right: 14px;
-  bottom: 18px;
-  display: block;
-  height: 15px;
-  overflow: hidden;
-  color: rgba(237, 247, 238, 0.62);
-  font-size: 11px;
-  line-height: 15px;
-}
-
-.bottom-row {
-  position: absolute;
-  left: 18px;
-  right: 18px;
-  bottom: 13px;
-  z-index: 5;
-  display: flex;
-  flex-direction: row;
-  justify-content: space-between;
-  align-items: center;
-  padding-top: 10px;
-  border-top: 1px solid rgba(237, 247, 238, 0.08);
-}
-
-.hint {
-  display: block;
-  max-width: 278px;
-  height: 16px;
-  overflow: hidden;
-  color: rgba(237, 247, 238, 0.40);
-  font-size: 11px;
-  line-height: 16px;
-}
-
-.hint.right {
-  max-width: 90px;
-  text-align: right;
-  color: rgba(159, 240, 167, 0.52);
-}
-
-/* v5 glance skin: compact, stable, and tuned for 448 x 320 smart-glasses UI. */
-.shell.card {
-  position: relative;
-  width: 448px;
-  height: 320px;
-  min-height: 320px;
-  box-sizing: border-box;
-  padding: 16px 18px 12px;
-  overflow: hidden;
-  color: #f2f6ed;
-  background:
-    linear-gradient(150deg, #070908 0%, #10130f 58%, #0a0b09 100%),
-    linear-gradient(90deg, rgba(118, 211, 137, 0.08), rgba(224, 188, 92, 0.06));
-  border: 1px solid rgba(219, 232, 208, 0.16);
-  border-radius: 8px;
-  font-family: Arial, sans-serif;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
-}
-
-.top-row {
-  position: relative;
-  z-index: 5;
-  display: flex;
-  flex-direction: row;
-  justify-content: space-between;
-  align-items: flex-start;
-}
-
-.shell.card .brand {
-  display: block;
-  color: #ffffff;
-  font-size: 24px;
-  line-height: 26px;
-  font-weight: 900;
-  letter-spacing: 0;
-}
-
-.shell.card .meta {
-  display: block;
-  max-width: 258px;
-  height: 17px;
-  overflow: hidden;
-  color: rgba(242, 246, 237, 0.58);
-  font-size: 12px;
-  line-height: 17px;
-}
-
-.status-pill {
-  display: block;
-  max-width: 86px;
-  height: 24px;
-  line-height: 24px;
-  padding: 0 10px;
-  overflow: hidden;
-  text-align: center;
-  border: 1px solid rgba(151, 218, 159, 0.44);
-  border-radius: 8px;
-  color: #c7f2c9;
-  background: rgba(151, 218, 159, 0.09);
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.content {
-  position: absolute;
-  left: 18px;
-  top: 72px;
-  z-index: 4;
-  width: 252px;
-}
-
-.shell.card .headline {
-  display: block;
-  max-width: 252px;
-  max-height: 58px;
-  overflow: hidden;
-  color: #ffffff;
-  font-size: 24px;
-  line-height: 28px;
-  font-weight: 900;
-  letter-spacing: 0;
-}
-
-.shell.card .body {
-  display: block;
-  max-width: 246px;
-  max-height: 42px;
-  margin-top: 7px;
-  overflow: hidden;
-  color: rgba(242, 246, 237, 0.70);
-  font-size: 13px;
-  line-height: 18px;
-}
-
-.overview-panel .headline,
-.detail-panel .headline,
-.locate-panel .headline,
-.error-panel .headline {
-  max-height: 52px;
-  font-size: 22px;
-  line-height: 26px;
-}
-
-.overview-panel .body,
-.detail-panel .body,
-.locate-panel .body,
-.error-panel .body {
-  max-height: 38px;
-}
-
-.shell.card .kicker {
-  display: block;
-  margin-bottom: 5px;
-  color: #b8e9b8;
-  font-size: 12px;
-  line-height: 15px;
-  font-weight: 800;
-}
-
-.button-grid,
-.button-grid.compact {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 13px;
-}
-
-.shell.card .btn {
-  min-width: 66px;
-  height: 34px;
-  line-height: 34px;
-  padding: 0 12px;
-  border: 1px solid rgba(242, 246, 237, 0.16);
-  border-radius: 8px;
-  color: rgba(242, 246, 237, 0.88);
-  background: rgba(255, 255, 255, 0.055);
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.shell.card .btn.primary {
-  color: #071008;
-  background: #b8e9b8;
-  border-color: #b8e9b8;
-}
-
-.shell.card .btn.secondary {
-  color: #cfefcf;
-  background: rgba(184, 233, 184, 0.08);
-  border-color: rgba(184, 233, 184, 0.28);
-}
-
-.shell.card .btn.ghost {
-  color: rgba(242, 246, 237, 0.68);
-}
-
-.target-row {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  margin-top: 10px;
-}
-
-.target-btn,
-.target-btn.star,
-.target-btn.planet,
-.target-btn.moon,
-.target-btn.deep,
-.target-btn.constellation,
-.target-btn.meteor {
-  position: relative;
-  display: block;
-  width: 218px;
-  height: 32px;
-  box-sizing: border-box;
-  padding: 3px 10px;
-  overflow: hidden;
-  text-align: left;
-  border: 1px solid rgba(184, 233, 184, 0.26);
-  border-radius: 8px;
-  color: #f2f6ed;
-  background: rgba(184, 233, 184, 0.07);
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.target-btn .target-name,
-.target-btn .target-meta {
-  display: block;
-  max-width: 196px;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.target-btn .target-name {
-  color: #ffffff;
-  font-size: 12px;
-  line-height: 14px;
-  font-weight: 900;
-}
-
-.target-btn .target-meta {
-  margin-top: 1px;
-  color: rgba(242, 246, 237, 0.56);
-  font-size: 10px;
-  line-height: 11px;
-}
-
-.target-btn.planet {
-  border-color: rgba(225, 188, 92, 0.52);
-  background: rgba(225, 188, 92, 0.10);
-}
-
-.target-btn.moon {
-  border-color: rgba(232, 232, 218, 0.48);
-  background: rgba(232, 232, 218, 0.08);
-}
-
-.target-btn.selected {
-  border-color: rgba(184, 233, 184, 0.70);
-  background: rgba(184, 233, 184, 0.15);
-}
-
-.sky-panel {
-  position: absolute;
-  right: 18px;
-  top: 72px;
-  z-index: 3;
-  width: 134px;
-  height: 188px;
-  box-sizing: border-box;
-  overflow: hidden;
-  padding: 11px 10px 9px;
-  border: 1px solid rgba(242, 246, 237, 0.14);
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.20);
-}
-
-.sky-panel-title,
-.sky-panel-meta,
-.sky-label,
-.sky-meta {
-  display: block;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.sky-panel-title {
-  color: rgba(242, 246, 237, 0.92);
-  font-size: 12px;
-  line-height: 14px;
-  font-weight: 900;
-}
-
-.sky-panel-meta {
-  height: 13px;
-  margin-top: 2px;
-  color: rgba(242, 246, 237, 0.48);
-  font-size: 9px;
-  line-height: 13px;
-}
-
-.sky-map {
-  position: absolute;
-  left: 10px;
-  top: 43px;
-  width: 114px;
-  height: 88px;
-  overflow: hidden;
-  border: 1px solid rgba(184, 233, 184, 0.16);
-  border-radius: 8px;
-  background: rgba(8, 12, 9, 0.72);
-}
-
-.sky-axis,
-.sky-bg-dot,
-.focus-ring,
-.sky-target,
-.sky-target-label {
-  position: absolute;
-}
-
-.sky-axis {
-  background: rgba(184, 233, 184, 0.10);
-}
-
-.sky-axis-h {
-  left: 0;
-  top: 50%;
-  width: 114px;
-  height: 1px;
-}
-
-.sky-axis-v {
-  left: 50%;
-  top: 0;
-  width: 1px;
-  height: 88px;
-}
-
-.sky-bg-dot {
-  display: block;
-  border-radius: 2px;
-  background: rgba(242, 246, 237, 0.38);
-}
-
-.focus-ring {
-  border: 1px solid rgba(184, 233, 184, 0.55);
-  border-radius: 14px;
-  box-shadow: 0 0 10px rgba(184, 233, 184, 0.10);
-}
-
-.sky-target,
-.sky-target.star,
-.sky-target.planet,
-.sky-target.moon,
-.sky-target.deep,
-.sky-target.constellation,
-.sky-target.meteor {
-  display: block;
-  min-width: 0;
-  padding: 0;
-  border: 1px solid #c9efcc;
-  border-radius: 50%;
-  background: #c9efcc;
-  box-shadow: 0 0 8px rgba(201, 239, 204, 0.46);
-}
-
-.sky-target.planet {
-  border-color: #e1bc5c;
-  background: #e1bc5c;
-  box-shadow: 0 0 9px rgba(225, 188, 92, 0.46);
-}
-
-.sky-target.moon {
-  border-color: #f0f0df;
-  background: #f0f0df;
-}
-
-.sky-target.selected {
-  border-width: 2px;
-}
-
-.sky-target-label {
-  max-width: 44px;
-  height: 10px;
-  overflow: hidden;
-  color: rgba(242, 246, 237, 0.62);
-  font-size: 8px;
-  line-height: 10px;
-}
-
-.sky-label {
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 26px;
-  height: 18px;
-  color: #ffffff;
-  font-size: 14px;
-  line-height: 18px;
-  font-weight: 900;
-}
-
-.sky-meta {
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 11px;
-  height: 13px;
-  color: rgba(242, 246, 237, 0.54);
-  font-size: 10px;
-  line-height: 13px;
-}
-
-.bottom-row {
-  position: absolute;
-  left: 18px;
-  right: 18px;
-  bottom: 12px;
-  z-index: 5;
-  display: flex;
-  flex-direction: row;
-  justify-content: space-between;
-  align-items: center;
-  height: 20px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(242, 246, 237, 0.08);
-}
-
-.hint {
-  display: block;
-  max-width: 280px;
-  height: 14px;
-  overflow: hidden;
-  color: rgba(242, 246, 237, 0.36);
-  font-size: 10px;
-  line-height: 14px;
-}
-
-.hint.right {
-  max-width: 86px;
-  text-align: right;
-  color: rgba(184, 233, 184, 0.52);
-}
-
-/* v6 interaction polish: keyboard focus, ASR guide, and denser overview fit. */
-.shell.card.overview .content {
-  top: 66px;
-}
-
-.shell.card.detail .content,
-.shell.card.locate .content,
-.shell.card.chat .content,
-.shell.card.loading .content,
-.shell.card.error .content {
-  top: 76px;
-}
-
-.overview-panel .headline {
-  max-height: 49px;
-  font-size: 21px;
-  line-height: 24px;
-}
-
-.overview-panel .body {
-  max-height: 34px;
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 17px;
-}
-
-.overview-panel .target-row {
-  gap: 4px;
-  margin-top: 8px;
-}
-
-.overview-panel .target-btn {
-  height: 30px;
-  padding-top: 2px;
-}
-
-.overview-panel .target-btn .target-name {
-  line-height: 13px;
-}
-
-.overview-panel .target-btn .target-meta {
-  line-height: 10px;
-}
-
-.overview-actions {
-  margin-top: 4px;
-}
-
-.overview-actions .btn {
-  min-width: 46px;
-  height: 22px;
-  line-height: 22px;
-  padding: 0 8px;
-  font-size: 10px;
-}
-
-.target-btn.selected,
-.target-btn.star.selected,
-.target-btn.planet.selected,
-.target-btn.moon.selected,
-.target-btn.deep.selected,
-.target-btn.constellation.selected,
-.target-btn.meteor.selected {
-  border-color: rgba(151, 218, 159, 0.92);
-  background: rgba(151, 218, 159, 0.16);
-  box-shadow: 0 0 12px rgba(151, 218, 159, 0.22);
-}
-
-.target-btn.selected .target-name {
-  color: #ffffff;
-}
-
-.target-btn.selected .target-meta {
-  color: rgba(220, 246, 218, 0.72);
-}
-
-.asr-guide {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  width: 232px;
-  height: 30px;
-  margin-top: 10px;
-  padding: 0 9px;
-  box-sizing: border-box;
-  border: 1px solid rgba(151, 218, 159, 0.22);
-  border-radius: 8px;
-  background: rgba(151, 218, 159, 0.08);
-}
-
-.guide-dot {
-  display: block;
-  width: 8px;
-  height: 8px;
-  margin-right: 8px;
-  border-radius: 4px;
-  background: #b8e9b8;
-  box-shadow: 0 0 10px rgba(184, 233, 184, 0.55);
-}
-
-.guide-text {
-  display: block;
-  max-width: 190px;
-  height: 16px;
-  overflow: hidden;
-  color: rgba(242, 246, 237, 0.72);
-  font-size: 11px;
-  line-height: 16px;
-}
-
-.sky-panel {
-  top: 66px;
-  height: 200px;
-  border-color: rgba(242, 246, 237, 0.16);
-  background:
-    radial-gradient(circle at 48% 45%, rgba(151, 218, 159, 0.12), transparent 42%),
-    rgba(0, 0, 0, 0.28);
-}
-
-.sky-map {
-  top: 43px;
-  height: 100px;
-  background:
-    radial-gradient(circle at 50% 55%, rgba(184, 233, 184, 0.08), transparent 52%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01)),
-    rgba(8, 12, 9, 0.78);
-}
-
-.sky-axis-h {
-  width: 114px;
-}
-
-.sky-axis-v {
-  height: 100px;
-}
-
-.sky-target,
-.sky-target.star,
-.sky-target.planet,
-.sky-target.moon,
-.sky-target.deep,
-.sky-target.constellation,
-.sky-target.meteor {
-  z-index: 6;
-}
-
-.sky-target.selected {
-  transform: scale(1.08);
-}
-
-.focus-ring {
-  z-index: 5;
-  border-color: rgba(225, 188, 92, 0.78);
-  box-shadow: 0 0 12px rgba(225, 188, 92, 0.18);
-}
-
-.sky-target-label {
-  z-index: 7;
-  max-width: 52px;
-  color: rgba(242, 246, 237, 0.72);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
-}
-
-.sky-label {
-  bottom: 31px;
-}
-
-.sky-meta {
-  bottom: 15px;
-}
-
-/* v7 detail reading mode: no chart, no buttons, only object guidance. */
-.shell.card.detail .sky-panel {
-  display: none;
-}
-
-.shell.card.detail .content {
-  left: 22px;
-  top: 72px;
-  width: 392px;
-}
-
-.detail-panel .headline {
-  max-width: 392px;
-  max-height: 32px;
-  font-size: 25px;
-  line-height: 30px;
-}
-
-.detail-panel .detail-meta {
-  max-width: 392px;
-  max-height: 22px;
-  margin-top: 4px;
-  color: rgba(242, 246, 237, 0.68);
-  font-size: 13px;
-  line-height: 18px;
-}
-
-.detail-block {
-  width: 392px;
-  margin-top: 12px;
-}
-
-.detail-block.intro-block {
-  margin-top: 10px;
-}
-
-.detail-label {
-  display: block;
-  height: 16px;
-  overflow: hidden;
-  color: #b8e9b8;
-  font-size: 12px;
-  line-height: 16px;
-  font-weight: 900;
-}
-
-.detail-text {
-  display: block;
-  max-width: 392px;
-  max-height: 52px;
-  margin-top: 3px;
-  overflow: hidden;
-  color: rgba(242, 246, 237, 0.76);
-  font-size: 14px;
-  line-height: 18px;
-}
-
-.shell.card.detail .bottom-row {
-  border-top-color: rgba(242, 246, 237, 0.06);
-}
-
-/* v8 fetched sky chart: standard horizon projection with larger chart area. */
-.shell.card.overview .content {
-  left: 16px;
-  top: 64px;
-  width: 184px;
-}
-
-.overview-panel .headline {
-  max-width: 184px;
-  max-height: 42px;
-  font-size: 18px;
-  line-height: 21px;
-}
-
-.overview-panel .body {
-  max-width: 182px;
-  max-height: 30px;
-  margin-top: 5px;
-  font-size: 10px;
-  line-height: 15px;
-}
-
-.overview-panel .target-row {
-  gap: 3px;
-  margin-top: 6px;
-}
-
-.overview-panel .target-btn,
-.overview-panel .target-btn.star,
-.overview-panel .target-btn.planet,
-.overview-panel .target-btn.moon,
-.overview-panel .target-btn.deep,
-.overview-panel .target-btn.constellation,
-.overview-panel .target-btn.meteor {
-  width: 180px;
-  height: 24px;
-  padding: 1px 8px;
-}
-
-.overview-panel .target-btn .target-name,
-.overview-panel .target-btn .target-meta {
-  max-width: 162px;
-}
-
-.overview-panel .target-btn .target-name {
-  font-size: 10px;
-  line-height: 12px;
-}
-
-.overview-panel .target-btn .target-meta {
-  font-size: 8px;
-  line-height: 9px;
-}
-
-.shell.card.overview .sky-panel {
-  right: 10px;
-  top: 54px;
-  width: 222px;
-  height: 232px;
-  padding: 9px 10px;
-}
-
-.shell.card.overview .sky-panel-title {
-  font-size: 12px;
-  line-height: 14px;
-}
-
-.shell.card.overview .sky-panel-meta {
-  height: 12px;
-  font-size: 9px;
-  line-height: 12px;
-}
-
-.shell.card.overview .sky-map {
-  left: 19px;
-  top: 35px;
-  width: 184px;
-  height: 184px;
-  border: 0;
-  border-radius: 92px;
-  background:
-    radial-gradient(circle at 50% 50%, rgba(184, 233, 184, 0.10), transparent 9%),
-    radial-gradient(circle at 50% 50%, rgba(184, 233, 184, 0.06), rgba(0, 0, 0, 0.02) 68%, rgba(0, 0, 0, 0.42) 100%);
-}
-
-.sky-circle,
-.sky-cross,
-.cardinal {
-  position: absolute;
-}
-
-.sky-circle {
-  border: 1px solid rgba(184, 233, 184, 0.20);
-  border-radius: 50%;
-}
-
-.horizon-ring {
-  left: 2px;
-  top: 2px;
-  width: 180px;
-  height: 180px;
-  border-color: rgba(242, 246, 237, 0.26);
-}
-
-.ring-30 {
-  left: 32px;
-  top: 32px;
-  width: 120px;
-  height: 120px;
-}
-
-.ring-60 {
-  left: 61px;
-  top: 61px;
-  width: 62px;
-  height: 62px;
-}
-
-.sky-cross {
-  background: rgba(184, 233, 184, 0.12);
-}
-
-.sky-cross-h {
-  left: 2px;
-  top: 92px;
-  width: 180px;
-  height: 1px;
-}
-
-.sky-cross-v {
-  left: 92px;
-  top: 2px;
-  width: 1px;
-  height: 180px;
-}
-
-.cardinal {
-  color: rgba(242, 246, 237, 0.56);
-  font-size: 8px;
-  line-height: 10px;
-  font-weight: 900;
-}
-
-.cardinal-n {
-  left: 88px;
-  top: 3px;
-}
-
-.cardinal-e {
-  right: 4px;
-  top: 87px;
-}
-
-.cardinal-s {
-  left: 88px;
-  bottom: 3px;
-}
-
-.cardinal-w {
-  left: 4px;
-  top: 87px;
-}
-
-.shell.card.overview .sky-target,
-.shell.card.overview .sky-target.star,
-.shell.card.overview .sky-target.planet,
-.shell.card.overview .sky-target.moon,
-.shell.card.overview .sky-target.deep,
-.shell.card.overview .sky-target.constellation,
-.shell.card.overview .sky-target.meteor {
-  z-index: 8;
-  display: block;
-  box-sizing: border-box;
-  min-width: 0;
-  min-height: 0;
-  padding: 0;
-  font-size: 0;
-  line-height: 0;
-  border-radius: 50%;
-  border: 1px solid rgba(242, 246, 237, 0.72);
-  background: rgba(242, 246, 237, 0.88);
-  box-shadow: 0 0 6px rgba(242, 246, 237, 0.35);
-}
-
-.shell.card.overview .sky-target.planet {
-  border-color: rgba(225, 188, 92, 0.95);
-  background: rgba(225, 188, 92, 0.95);
-  box-shadow: 0 0 9px rgba(225, 188, 92, 0.50);
-}
-
-.shell.card.overview .sky-target.moon {
-  border-color: #f2f6ed;
-  background: #f2f6ed;
-  box-shadow: 0 0 10px rgba(242, 246, 237, 0.52);
-}
-
-.shell.card.overview .sky-target.deep,
-.shell.card.overview .sky-target.constellation,
-.shell.card.overview .sky-target.meteor {
-  opacity: 0.78;
-}
-
-.shell.card.overview .sky-target.selected {
-  z-index: 10;
-  border: 2px solid #e1bc5c;
-  background: rgba(225, 188, 92, 0.30);
-  box-shadow: 0 0 12px rgba(225, 188, 92, 0.72);
-}
-
-.shell.card.overview .sky-target-label {
-  z-index: 11;
-  max-width: 62px;
-  height: 11px;
-  color: rgba(242, 246, 237, 0.86);
-  font-size: 8px;
-  line-height: 11px;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.82);
-}
-
-.shell.card.overview .sky-label,
-.shell.card.overview .sky-meta {
-  display: none;
-}
-
-/* v8.3: the large fetched sky chart is overview-only. */
-.shell.card.home .sky-panel,
-.shell.card.chat .sky-panel,
-.shell.card.loading .sky-panel,
-.shell.card.locate .sky-panel,
-.shell.card.error .sky-panel {
-  display: none;
-}
-
-.shell.card.home .content,
-.shell.card.chat .content,
-.shell.card.loading .content,
-.shell.card.error .content {
-  width: 392px;
-}
-
-.shell.card.home .headline,
-.shell.card.chat .headline,
-.shell.card.loading .headline,
-.shell.card.error .headline {
-  max-width: 392px;
-}
-
-.shell.card.home .body,
-.shell.card.chat .body,
-.shell.card.loading .body,
-.shell.card.error .body {
-  max-width: 356px;
-}
-
-/* v9 AIUI card skin: final overrides for a 480 x 320 smart-glasses surface. */
-.shell.card {
-  --sky-bg: #000000;
-  --sky-surface: rgba(255, 255, 255, 0.045);
-  --sky-surface-strong: rgba(255, 255, 255, 0.075);
-  --sky-text: var(--color-text-primary);
-  --sky-muted: var(--color-text-secondary);
-  --sky-primary: var(--color-primary);
-  --sky-primary-soft: var(--color-primary-40);
-  --sky-border: var(--border-color-muted);
-  --sky-gold: #e4bf63;
+  --green: #40FF5E;
+  --green-82: rgba(64, 255, 94, 0.82);
+  --green-62: rgba(64, 255, 94, 0.62);
+  --green-42: rgba(64, 255, 94, 0.42);
+  --green-26: rgba(64, 255, 94, 0.26);
+  --green-16: rgba(64, 255, 94, 0.16);
+  --green-08: rgba(64, 255, 94, 0.08);
+  --black-92: rgba(0, 0, 0, 0.92);
+  --black-72: rgba(0, 0, 0, 0.72);
+  --black-42: rgba(0, 0, 0, 0.42);
   position: relative;
   width: 480px;
   height: 320px;
   min-height: 320px;
-  max-height: 320px;
   box-sizing: border-box;
   padding: 18px 20px 14px;
   overflow: hidden;
-  color: var(--sky-text);
-  background: var(--sky-bg);
-  border: 2px solid var(--sky-border);
+  color: var(--green);
+  background: #000000;
+  border: 2px solid var(--green-26);
   border-radius: 12px;
-  font-family: Arial, sans-serif;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.035);
+  font-family: sans-serif;
 }
 
 .top-row {
   position: relative;
-  z-index: 6;
+  z-index: 20;
   display: flex;
   flex-direction: row;
   justify-content: space-between;
   align-items: flex-start;
+  width: 440px;
   height: 38px;
+  overflow: hidden;
 }
 
-.shell.card .brand {
+.brand {
   display: block;
+  width: 180px;
   height: 24px;
-  color: var(--sky-text);
+  overflow: hidden;
+  color: var(--green);
   font-size: 22px;
   line-height: 24px;
   font-weight: 900;
-  letter-spacing: 0;
-}
-
-.shell.card .meta {
-  display: block;
-  max-width: 300px;
-  height: 15px;
-  margin-top: 2px;
-  overflow: hidden;
-  color: var(--sky-muted);
-  font-size: 11px;
-  line-height: 15px;
   white-space: nowrap;
 }
 
 .status-pill {
   display: flex;
+  flex-direction: row;
   justify-content: center;
   align-items: center;
   width: 78px;
   height: 26px;
   box-sizing: border-box;
+  padding: 0;
   overflow: hidden;
-  color: var(--sky-primary);
-  background: rgba(255, 255, 255, 0.035);
-  border: 2px solid var(--border-color-accent);
+  background: var(--black-42);
+  border: 1px solid var(--green-62);
   border-radius: 12px;
-  font-size: 11px;
-  line-height: 11px;
+}
+
+.status-pill-text {
+  display: block;
+  width: 72px;
+  height: 14px;
+  overflow: hidden;
+  color: var(--green);
+  font-size: 10px;
+  line-height: 14px;
   font-weight: 900;
   text-align: center;
   white-space: nowrap;
@@ -4871,43 +3395,49 @@ export default {
   position: absolute;
   left: 22px;
   top: 74px;
-  z-index: 5;
+  z-index: 10;
   width: 436px;
+  height: 218px;
+  overflow: hidden;
 }
 
-.shell.card .kicker {
+.kicker {
   display: block;
+  width: 420px;
   height: 16px;
   margin-bottom: 5px;
   overflow: hidden;
-  color: var(--sky-primary);
+  color: var(--green);
   font-size: 12px;
   line-height: 16px;
   font-weight: 900;
   white-space: nowrap;
 }
 
-.shell.card .headline {
+.headline {
   display: block;
-  max-width: 436px;
-  max-height: 58px;
+  width: 420px;
+  height: 58px;
   overflow: hidden;
-  color: var(--sky-text);
+  color: var(--green);
   font-size: 24px;
   line-height: 29px;
   font-weight: 900;
-  letter-spacing: 0;
+  white-space: normal;
+  word-break: break-all;
 }
 
-.shell.card .body {
+.body {
   display: block;
-  max-width: 414px;
-  max-height: 42px;
+  width: 414px;
+  height: 42px;
   margin-top: 8px;
   overflow: hidden;
-  color: var(--sky-muted);
+  color: var(--green-62);
   font-size: 13px;
   line-height: 19px;
+  white-space: normal;
+  word-break: break-all;
 }
 
 .button-grid,
@@ -4916,490 +3446,45 @@ export default {
   flex-direction: row;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 16px;
+  margin-top: 14px;
 }
 
-.shell.card .btn {
-  display: flex;
-  justify-content: center;
-  align-items: center;
+.btn {
+  display: block;
   min-width: 70px;
   height: 34px;
   box-sizing: border-box;
   padding: 0 12px;
   overflow: hidden;
-  color: var(--sky-text);
-  background: var(--sky-surface);
-  border: 2px solid var(--sky-border);
-  border-radius: 12px;
-  font-size: 13px;
-  line-height: 13px;
+  color: var(--green);
+  background: var(--black-42);
+  border: 1px solid var(--green-42);
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 32px;
   font-weight: 900;
   text-align: center;
   white-space: nowrap;
 }
 
-.shell.card .btn.primary {
-  color: #061107;
-  background: var(--sky-primary);
-  border-color: var(--sky-primary);
+.btn.primary {
+  color: #000000;
+  background: var(--green);
+  border-color: var(--green);
 }
 
-.shell.card .btn.secondary {
-  color: var(--sky-primary);
-  background: rgba(255, 255, 255, 0.04);
-  border-color: var(--border-color-accent);
+.btn.secondary {
+  color: var(--green);
+  background: var(--green-08);
 }
 
-.shell.card .btn.ghost {
-  color: var(--sky-muted);
+.btn.ghost {
+  color: var(--green-62);
   background: transparent;
 }
 
-.shell.card.home .sky-panel,
-.shell.card.chat .sky-panel,
-.shell.card.loading .sky-panel,
-.shell.card.detail .sky-panel,
-.shell.card.locate .sky-panel,
-.shell.card.error .sky-panel {
-  display: none;
-}
-
-.shell.card.home .content,
-.shell.card.chat .content,
-.shell.card.loading .content,
-.shell.card.locate .content,
-.shell.card.error .content {
-  left: 22px;
-  top: 74px;
-  width: 436px;
-}
-
-.shell.card.home .headline,
-.shell.card.chat .headline,
-.shell.card.loading .headline,
-.shell.card.locate .headline,
-.shell.card.error .headline {
-  max-width: 436px;
-}
-
-.shell.card.home .body,
-.shell.card.chat .body,
-.shell.card.loading .body,
-.shell.card.locate .body,
-.shell.card.error .body {
-  max-width: 414px;
-}
-
-.shell.card.home .content {
-  top: 72px;
-}
-
-.shell.card.home .kicker {
-  margin-bottom: 6px;
-}
-
-.shell.card.home .headline {
-  max-width: 420px;
-  max-height: 64px;
-  font-size: 23px;
-  line-height: 29px;
-}
-
-.shell.card.home .body {
-  max-width: 390px;
-  max-height: 56px;
-  margin-top: 10px;
-  font-size: 13px;
-  line-height: 19px;
-}
-
 .home-actions {
-  margin-top: 18px;
-}
-
-.shell.card .gps-btn {
-  min-width: 128px;
-  height: 36px;
-}
-
-.shell.card.overview .content {
-  left: 18px;
-  top: 56px;
-  width: 210px;
-}
-
-.overview-panel .headline {
-  max-width: 210px;
-  height: 42px;
-  max-height: 42px;
-  overflow: hidden;
-  font-size: 18px;
-  line-height: 21px;
-  word-break: break-all;
-}
-
-.overview-panel .body {
-  max-width: 206px;
-  height: 30px;
-  max-height: 30px;
-  overflow: hidden;
-  margin-top: 5px;
-  font-size: 10px;
-  line-height: 15px;
-  word-break: break-all;
-}
-
-.overview-panel .target-row {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin-top: 7px;
-  height: 122px;
-  overflow: hidden;
-}
-
-.overview-panel .target-btn,
-.overview-panel .target-btn.star,
-.overview-panel .target-btn.planet,
-.overview-panel .target-btn.moon,
-.overview-panel .target-btn.deep,
-.overview-panel .target-btn.constellation,
-.overview-panel .target-btn.meteor {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: flex-start;
-  width: 204px;
-  height: 22px;
-  box-sizing: border-box;
-  padding: 0 8px;
-  overflow: hidden;
-  color: var(--sky-text);
-  background: var(--sky-surface);
-  border: 1px solid var(--sky-border);
-  border-radius: 8px;
-  line-height: 1;
-  text-align: left;
-}
-
-.target-btn .target-name,
-.target-btn .target-meta {
-  display: block;
-  max-width: 184px;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.target-btn .target-name {
-  height: 11px;
-  color: var(--sky-text);
-  font-size: 10px;
-  line-height: 11px;
-  font-weight: 900;
-}
-
-.target-btn .target-meta {
-  height: 8px;
-  margin-top: 0;
-  color: var(--sky-muted);
-  font-size: 8px;
-  line-height: 8px;
-}
-
-.target-btn.planet {
-  border-color: rgba(228, 191, 99, 0.65);
-  background: rgba(228, 191, 99, 0.10);
-}
-
-.target-btn.moon {
-  border-color: rgba(242, 246, 237, 0.62);
-  background: rgba(242, 246, 237, 0.08);
-}
-
-.target-btn.selected,
-.target-btn.star.selected,
-.target-btn.planet.selected,
-.target-btn.moon.selected,
-.target-btn.deep.selected,
-.target-btn.constellation.selected,
-.target-btn.meteor.selected {
-  border-color: var(--sky-primary);
-  background: var(--sky-primary-soft);
-  box-shadow: none;
-}
-
-.overview-actions {
-  margin-top: 5px;
-}
-
-.overview-actions .btn {
-  min-width: 48px;
-  height: 22px;
-  padding: 0 8px;
-  font-size: 10px;
-  line-height: 20px;
-}
-
-.shell.card.overview .sky-panel {
-  position: absolute;
-  right: 14px;
-  top: 54px;
-  z-index: 4;
-  display: block;
-  width: 224px;
-  height: 230px;
-  box-sizing: border-box;
-  padding: 9px 10px;
-  overflow: hidden;
-  background: var(--sky-surface);
-  border: 2px solid var(--sky-border);
-  border-radius: 12px;
-}
-
-.sky-panel-title,
-.sky-panel-meta,
-.sky-label,
-.sky-meta {
-  display: block;
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.shell.card.overview .sky-panel-title {
-  height: 14px;
-  color: var(--sky-text);
-  font-size: 12px;
-  line-height: 14px;
-  font-weight: 900;
-}
-
-.shell.card.overview .sky-panel-meta {
-  height: 12px;
-  margin-top: 2px;
-  color: var(--sky-muted);
-  font-size: 9px;
-  line-height: 12px;
-}
-
-.shell.card.overview .sky-map {
-  position: absolute;
-  left: 20px;
-  top: 36px;
-  width: 184px;
-  height: 184px;
-  overflow: hidden;
-  background: rgba(64, 255, 94, 0.035);
-  border: 0;
-  border-radius: 92px;
-}
-
-.sky-circle,
-.sky-cross,
-.cardinal,
-.sky-target,
-.sky-target-label {
-  position: absolute;
-}
-
-.sky-circle {
-  border: 1px solid rgba(64, 255, 94, 0.24);
-  border-radius: 50%;
-}
-
-.horizon-ring {
-  left: 2px;
-  top: 2px;
-  width: 180px;
-  height: 180px;
-}
-
-.ring-30 {
-  left: 32px;
-  top: 32px;
-  width: 120px;
-  height: 120px;
-}
-
-.ring-60 {
-  left: 61px;
-  top: 61px;
-  width: 62px;
-  height: 62px;
-}
-
-.sky-cross {
-  background: rgba(64, 255, 94, 0.18);
-}
-
-.sky-cross-h {
-  left: 2px;
-  top: 92px;
-  width: 180px;
-  height: 1px;
-}
-
-.sky-cross-v {
-  left: 92px;
-  top: 2px;
-  width: 1px;
-  height: 180px;
-}
-
-.cardinal {
-  color: var(--sky-primary);
-  font-size: 8px;
-  line-height: 10px;
-  font-weight: 900;
-}
-
-.cardinal-n {
-  left: 88px;
-  top: 3px;
-}
-
-.cardinal-e {
-  right: 4px;
-  top: 87px;
-}
-
-.cardinal-s {
-  left: 88px;
-  bottom: 3px;
-}
-
-.cardinal-w {
-  left: 4px;
-  top: 87px;
-}
-
-.shell.card.overview .sky-target,
-.shell.card.overview .sky-target.star,
-.shell.card.overview .sky-target.planet,
-.shell.card.overview .sky-target.moon,
-.shell.card.overview .sky-target.deep,
-.shell.card.overview .sky-target.constellation,
-.shell.card.overview .sky-target.meteor {
-  z-index: 8;
-  display: block;
-  min-width: 0;
-  min-height: 0;
-  box-sizing: border-box;
-  padding: 0;
-  background: rgba(64, 255, 94, 0.55);
-  border: 1px solid rgba(64, 255, 94, 0.62);
-  border-radius: 50%;
-  box-shadow: 0 0 5px rgba(64, 255, 94, 0.28);
-}
-
-.shell.card.overview .sky-target.planet {
-  background: rgba(64, 255, 94, 0.74);
-  border-color: rgba(64, 255, 94, 0.82);
-  box-shadow: 0 0 7px rgba(64, 255, 94, 0.38);
-}
-
-.shell.card.overview .sky-target.moon {
-  background: rgba(64, 255, 94, 0.78);
-  border-color: var(--sky-primary);
-}
-
-.shell.card.overview .sky-target.selected {
-  z-index: 10;
-  background: rgba(64, 255, 94, 0.26);
-  border: 2px solid var(--sky-primary);
-  box-shadow: 0 0 8px rgba(64, 255, 94, 0.55);
-}
-
-.shell.card.overview .selected-sky-marker {
-  position: absolute;
-  z-index: 12;
-  display: block;
-  min-width: 0;
-  min-height: 0;
-  box-sizing: border-box;
-  padding: 0;
-  background: rgba(64, 255, 94, 0.26);
-  border: 2px solid var(--sky-primary);
-  border-radius: 50%;
-  box-shadow: 0 0 8px rgba(64, 255, 94, 0.55);
-}
-
-.shell.card.overview .selected-sky-name {
-  position: absolute;
-  z-index: 13;
-  display: block;
-  max-width: 54px;
-  height: 12px;
-  overflow: hidden;
-  color: var(--sky-primary);
-  font-size: 9px;
-  line-height: 12px;
-  font-weight: 900;
-  white-space: nowrap;
-}
-
-.shell.card.overview .sky-target-label {
-  z-index: 11;
-  max-width: 54px;
-  height: 12px;
-  overflow: hidden;
-  color: var(--sky-primary);
-  font-size: 9px;
-  line-height: 12px;
-  font-weight: 900;
-}
-
-.shell.card.overview .sky-label,
-.shell.card.overview .sky-meta {
-  display: none;
-}
-
-.shell.card.detail .content {
-  left: 24px;
-  top: 66px;
-  width: 432px;
-}
-
-.detail-panel .headline {
-  max-width: 432px;
-  max-height: 34px;
-  font-size: 26px;
-  line-height: 32px;
-}
-
-.detail-panel .detail-meta {
-  max-width: 432px;
-  max-height: 22px;
-  margin-top: 4px;
-  color: var(--sky-muted);
-  font-size: 13px;
-  line-height: 18px;
-}
-
-.detail-block {
-  width: 432px;
-  margin-top: 12px;
-}
-
-.detail-label {
-  display: block;
-  height: 16px;
-  overflow: hidden;
-  color: var(--sky-primary);
-  font-size: 12px;
-  line-height: 16px;
-  font-weight: 900;
-}
-
-.detail-text {
-  display: block;
-  max-width: 432px;
-  max-height: 52px;
-  margin-top: 3px;
-  overflow: hidden;
-  color: var(--sky-muted);
-  font-size: 14px;
-  line-height: 18px;
+  margin-top: 16px;
 }
 
 .asr-guide {
@@ -5407,13 +3492,14 @@ export default {
   flex-direction: row;
   align-items: center;
   width: 300px;
-  height: 32px;
+  height: 48px;
   box-sizing: border-box;
-  margin-top: 12px;
-  padding: 0 10px;
-  background: var(--sky-surface);
-  border: 2px solid var(--border-color-accent);
-  border-radius: 12px;
+  margin-top: 10px;
+  padding: 6px 10px;
+  overflow: hidden;
+  background: var(--black-42);
+  border: 1px solid var(--green-42);
+  border-radius: 10px;
 }
 
 .guide-dot {
@@ -5421,279 +3507,482 @@ export default {
   width: 8px;
   height: 8px;
   margin-right: 8px;
-  background: var(--sky-primary);
+  flex-shrink: 0;
+  background: var(--green);
   border-radius: 4px;
 }
 
 .guide-text {
   display: block;
-  max-width: 254px;
-  height: 16px;
+  width: 254px;
+  height: 30px;
   overflow: hidden;
-  color: var(--sky-muted);
-  font-size: 11px;
-  line-height: 16px;
-  white-space: nowrap;
+  color: var(--green-62);
+  font-size: 10px;
+  line-height: 15px;
+  white-space: normal;
+  word-break: break-all;
 }
 
-.location-readout {
-  display: block;
-  max-width: 300px;
-  height: 16px;
-  margin-top: 10px;
-  overflow: hidden;
-  color: var(--sky-muted);
-  font-size: 11px;
-  line-height: 16px;
-  white-space: nowrap;
-}
-
+.location-readout,
 .debug-line {
   display: block;
-  max-width: 414px;
+  width: 404px;
   height: 16px;
-  margin-top: 9px;
+  margin-top: 8px;
   overflow: hidden;
-  color: rgba(255, 255, 255, 0.36);
-  font-size: 10px;
+  color: var(--green-42);
+  font-size: 9px;
   line-height: 16px;
   white-space: nowrap;
+}
+
+.overview-panel {
+  left: 18px;
+  top: 56px;
+  width: 210px;
+  height: 230px;
+}
+
+.overview-panel .headline {
+  width: 210px;
+  height: 21px;
+  font-size: 18px;
+  line-height: 21px;
+  white-space: nowrap;
+}
+
+.overview-panel .body {
+  width: 206px;
+  height: 30px;
+  margin-top: 5px;
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.target-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 204px;
+  height: 132px;
+  margin-top: 7px;
+  overflow: hidden;
+}
+
+.target-btn {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  flex-shrink: 0;
+  width: 204px;
+  height: 24px;
+  min-height: 24px;
+  box-sizing: border-box;
+  padding: 0 8px;
+  overflow: hidden;
+  color: var(--green);
+  background: var(--black-42);
+  border: 2px solid var(--green-26);
+  border-radius: 7px;
+  text-align: left;
+}
+
+.target-btn.planet,
+.target-btn.moon {
+  border-color: var(--green-62);
+}
+
+.target-btn.selected {
+  background: var(--green-16);
+  border-color: var(--green);
+}
+
+.target-name {
+  display: block;
+  width: 184px;
+  height: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--green);
+  font-size: 9px;
+  line-height: 11px;
+  font-weight: 900;
+}
+
+.target-meta {
+  display: block;
+  width: 184px;
+  height: 8px;
+  overflow: hidden;
+  color: var(--green-62);
+  font-size: 7px;
+  line-height: 8px;
+  white-space: nowrap;
+}
+
+.sky-panel {
+  position: absolute;
+  right: 14px;
+  top: 54px;
+  z-index: 9;
+  width: 224px;
+  height: 230px;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  overflow: hidden;
+  background: var(--black-42);
+  border: 1px solid var(--green-26);
+  border-radius: 12px;
+}
+
+.home .sky-panel,
+.chat .sky-panel,
+.loading .sky-panel,
+.detail .sky-panel,
+.locate .sky-panel,
+.error .sky-panel {
+  display: none;
+}
+
+.sky-panel-title {
+  display: block;
+  width: 202px;
+  height: 14px;
+  overflow: hidden;
+  color: var(--green);
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.sky-panel-meta {
+  display: block;
+  width: 202px;
+  height: 12px;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--green-62);
+  font-size: 8px;
+  line-height: 12px;
+  white-space: nowrap;
+}
+
+.sky-map {
+  position: absolute;
+  left: 20px;
+  top: 36px;
+  width: 184px;
+  height: 184px;
+  overflow: hidden;
+  background: var(--green-08);
+  border-radius: 92px;
+}
+
+.sky-circle {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid var(--green-26);
+  border-radius: 50%;
+}
+
+.horizon-ring {
+  left: 2px;
+  top: 2px;
+  width: 180px;
+  height: 180px;
+}
+
+.ring-30 {
+  left: 32px;
+  top: 32px;
+  width: 120px;
+  height: 120px;
+}
+
+.ring-60 {
+  left: 61px;
+  top: 61px;
+  width: 62px;
+  height: 62px;
+}
+
+.sky-cross {
+  position: absolute;
+  background: var(--green-16);
+}
+
+.sky-cross-h {
+  left: 2px;
+  top: 92px;
+  width: 180px;
+  height: 1px;
+}
+
+.sky-cross-v {
+  left: 92px;
+  top: 2px;
+  width: 1px;
+  height: 180px;
+}
+
+.cardinal {
+  position: absolute;
+  color: var(--green);
+  font-size: 8px;
+  line-height: 10px;
+  font-weight: 900;
+}
+
+.cardinal-n { left: 88px; top: 3px; }
+.cardinal-e { right: 4px; top: 87px; }
+.cardinal-s { left: 88px; bottom: 3px; }
+.cardinal-w { left: 4px; top: 87px; }
+
+.sky-target {
+  position: absolute;
+  z-index: 8;
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  padding: 0;
+  background: var(--green-62);
+  border: 1px solid var(--green-82);
+  border-radius: 50%;
+}
+
+.sky-target.selected,
+.selected-sky-marker {
+  position: absolute;
+  z-index: 12;
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  padding: 0;
+  background: var(--green-26);
+  border: 2px solid var(--green);
+  border-radius: 50%;
+}
+
+.detail-panel {
+  left: 20px;
+  top: 62px;
+  width: 440px;
+  height: 226px;
+}
+
+.detail-layout {
+  position: relative;
+  display: block;
+  width: 440px;
+  height: 226px;
+  overflow: hidden;
+}
+
+.detail-left {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 170px;
+  height: 226px;
+  overflow: hidden;
+}
+
+.detail-left .kicker {
+  width: 166px;
+  height: 14px;
+  margin: 0 0 3px;
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.detail-left .headline {
+  width: 166px;
+  height: 25px;
+  font-size: 19px;
+  line-height: 25px;
+  white-space: nowrap;
+}
+
+.detail-left .detail-meta {
+  width: 166px;
+  height: 13px;
+  margin-top: 2px;
+  font-size: 9px;
+  line-height: 13px;
+  white-space: nowrap;
+}
+
+.detail-block {
+  width: 166px;
+  height: 65px;
+  margin-top: 7px;
+  overflow: hidden;
+}
+
+.detail-block.intro-block {
+  height: 54px;
+  margin-top: 8px;
+}
+
+.detail-label {
+  display: block;
+  width: 166px;
+  height: 14px;
+  overflow: hidden;
+  color: var(--green);
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.detail-text {
+  display: block;
+  width: 166px;
+  height: 39px;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--green-62);
+  font-size: 10px;
+  line-height: 13px;
+  white-space: normal;
+  word-break: break-all;
+}
+
+.detail-intro-text {
+  height: 52px;
+}
+
+.detail-agent {
+  position: absolute;
+  left: 178px;
+  top: 0;
+  display: block;
+  width: 262px;
+  height: 218px;
+  box-sizing: border-box;
+  padding: 12px;
+  overflow: hidden;
+  background: var(--black-72);
+  border: 2px solid var(--green-62);
+  border-radius: 12px;
+}
+
+.detail-agent-title {
+  display: block;
+  width: 234px;
+  height: 18px;
+  overflow: hidden;
+  color: var(--green);
+  font-size: 14px;
+  line-height: 18px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.detail-agent-subtitle {
+  display: block;
+  width: 234px;
+  height: 14px;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--green-62);
+  font-size: 9px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.detail-agent-question {
+  display: block;
+  width: 234px;
+  height: 32px;
+  box-sizing: border-box;
+  margin-top: 7px;
+  padding: 3px 6px;
+  overflow: hidden;
+  color: var(--green);
+  background: var(--green-08);
+  border: 1px solid var(--green-26);
+  border-radius: 7px;
+  font-size: 9px;
+  line-height: 13px;
+  white-space: normal;
+  word-break: break-all;
+}
+
+.detail-agent-answer {
+  display: block;
+  width: 234px;
+  height: 60px;
+  margin-top: 8px;
+  overflow: hidden;
+  color: var(--green-62);
+  font-size: 11px;
+  line-height: 15px;
+  white-space: normal;
+  word-break: break-all;
+}
+
+.detail-agent-actions {
+  width: 234px;
+  height: 32px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.detail-talk-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 124px;
+  min-width: 124px;
+  height: 30px;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 12px;
+  text-align: center;
+}
+
+.locate-panel .headline,
+.error-panel .headline {
+  height: 58px;
 }
 
 .bottom-row {
   position: absolute;
   left: 20px;
-  right: 20px;
   bottom: 12px;
-  z-index: 6;
+  z-index: 20;
   display: flex;
   flex-direction: row;
   justify-content: space-between;
   align-items: center;
+  width: 440px;
   height: 20px;
   box-sizing: border-box;
-  padding-top: 7px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+  border-top: 1px solid var(--green-16);
 }
 
 .hint {
   display: block;
-  max-width: 302px;
+  width: 302px;
   height: 13px;
   overflow: hidden;
-  color: rgba(255, 255, 255, 0.38);
+  color: var(--green-42);
   font-size: 10px;
   line-height: 13px;
   white-space: nowrap;
 }
 
 .hint.right {
-  max-width: 100px;
-  color: var(--sky-primary);
+  width: 90px;
+  color: var(--green-62);
   text-align: right;
 }
-
-/* v10: detail page agent panel with object-scoped context. */
-.shell.card.detail .content {
-  left: 20px;
-  top: 62px;
-  width: 440px;
-}
-
-.detail-layout {
-  display: flex;
-  flex-direction: row;
-  gap: 12px;
-  width: 440px;
-}
-
-.detail-left {
-  width: 166px;
-  overflow: hidden;
-}
-
-.detail-left .headline {
-  max-width: 166px;
-  max-height: 30px;
-  overflow: hidden;
-  font-size: 22px;
-  line-height: 27px;
-}
-
-.detail-left .detail-meta {
-  max-width: 166px;
-  max-height: 18px;
-  margin-top: 3px;
-  overflow: hidden;
-  color: var(--sky-muted);
-  font-size: 10px;
-  line-height: 14px;
-}
-
-.detail-left .detail-block {
-  width: 166px;
-  margin-top: 8px;
-}
-
-.detail-left .detail-text {
-  max-width: 166px;
-  max-height: 42px;
-  overflow: hidden;
-  color: var(--sky-muted);
-  font-size: 11px;
-  line-height: 15px;
-}
-
-.detail-left .detail-intro-text {
-  max-height: 72px;
-}
-
-.detail-agent {
-  display: flex;
-  flex-direction: column;
-  width: 262px;
-  height: 218px;
-  box-sizing: border-box;
-  padding: 12px;
-  overflow: hidden;
-  background: var(--sky-surface);
-  border: 2px solid var(--border-color-accent);
-  border-radius: 12px;
-}
-
-.detail-agent-title {
-  display: block;
-  height: 18px;
-  overflow: hidden;
-  color: var(--sky-primary);
-  font-size: 15px;
-  line-height: 18px;
-  font-weight: 900;
-}
-
-.detail-agent-subtitle {
-  display: block;
-  height: 14px;
-  margin-top: 2px;
-  overflow: hidden;
-  color: var(--sky-muted);
-  font-size: 10px;
-  line-height: 14px;
-}
-
-.detail-agent-question {
-  display: block;
-  width: 234px;
-  max-height: 34px;
-  box-sizing: border-box;
-  margin-top: 8px;
-  padding: 4px 6px;
-  overflow: hidden;
-  color: var(--sky-primary);
-  background: rgba(64, 255, 94, 0.06);
-  border: 1px solid var(--border-color-muted);
-  border-radius: 8px;
-  font-size: 10px;
-  line-height: 14px;
-}
-
-.detail-agent-answer {
-  display: block;
-  width: 234px;
-  max-height: 88px;
-  margin-top: 8px;
-  overflow: hidden;
-  color: var(--sky-muted);
-  font-size: 11px;
-  line-height: 15px;
-}
-
-.detail-agent-actions {
-  width: 234px;
-  margin-top: 10px;
-  gap: 0;
-}
-
-.detail-agent-actions .btn {
-  min-width: 112px;
-  height: 32px;
-  padding: 0 10px;
-  font-size: 12px;
-}
-
-.detail-agent-actions .detail-talk-btn {
-  min-width: 124px;
-}
-
-/* v10.1: center the top-right status title inside its pill. */
-.status-pill {
-  display: flex;
-  flex-direction: row;
-  justify-content: center;
-  align-items: center;
-  width: 78px;
-  height: 26px;
-  box-sizing: border-box;
-  padding: 0;
-  overflow: hidden;
-  text-align: center;
-  border: 1px solid var(--border-color-accent);
-  border-radius: 14px;
-  color: var(--sky-primary);
-  background: rgba(64, 255, 94, 0.04);
-  line-height: 26px;
-}
-
-.status-pill-text {
-  display: block;
-  width: 76px;
-  height: 14px;
-  overflow: hidden;
-  color: var(--sky-primary);
-  font-size: 11px;
-  line-height: 14px;
-  font-weight: 900;
-  text-align: center;
-  white-space: nowrap;
-}
-
-/* v10.2: compact the detail intro column to avoid text overlap. */
-.detail-left .headline {
-  max-height: 28px;
-  font-size: 20px;
-  line-height: 25px;
-}
-
-.detail-left .detail-meta {
-  max-height: 14px;
-  margin-top: 2px;
-  font-size: 9px;
-  line-height: 12px;
-}
-
-.detail-left .detail-block {
-  margin-top: 6px;
-}
-
-.detail-left .intro-block {
-  margin-top: 28px;
-}
-
-.detail-left .detail-label {
-  height: 14px;
-  font-size: 10px;
-  line-height: 14px;
-}
-
-.detail-left .detail-text {
-  max-height: 28px;
-  margin-top: 2px;
-  font-size: 10px;
-  line-height: 13px;
-}
-
-.detail-left .detail-intro-text {
-  max-height: 52px;
-}
-
 </style>
