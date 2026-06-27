@@ -1,8 +1,8 @@
 {
   "name": "skymate-aiui-agent",
   "displayName": "SkyMate",
-  "version": "14.0.6-device-asr.1",
-  "description": "SkyMate device ASR interaction build",
+  "version": "14.0.7-final-asr.1",
+  "description": "SkyMate ASR diagnostics build",
   "pages": [
     "pages/index/index"
   ],

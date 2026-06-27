@@ -1,6 +1,6 @@
 {
   "name": "skymate-aiui-agent",
-  "version": "14.0.6-device-asr.1",
+  "version": "14.0.7-final-asr.1",
   "description": "SkyMate AIUI agent for astronomy discovery cards",
   "main": "app.js",
   "private": true,

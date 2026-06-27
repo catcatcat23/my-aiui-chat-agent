@@ -32,7 +32,7 @@
 </script>
 
 <script setup>
-const BUILD_VERSION = 'v14.0.6-device-asr.1'
+const BUILD_VERSION = 'v14.0.7-final-asr.1'
 const SKY_CHART_ENDPOINT = 'https://sky.eunoia.top/sky/chart'
 const GEOCODING_ENDPOINT = 'https://geocoding-api.open-meteo.com/v1/search'
 const HUD_TARGET_SLOT_COUNT = 5
@@ -648,6 +648,20 @@ function queryFromRaw(rawQuery) {
 function errorText(error) {
   if (!error) return 'unknown error'
   return error.message || error.statusText || String(error)
+}
+
+function speechErrorStatus(prefix, event) {
+  const errorValue = event && (event.error || event.errCode || event.code || event.message || event.errMsg)
+  return `${prefix}:${shortText(errorValue || 'unknown', 18)}`
+}
+
+function speechErrorDetail(event) {
+  if (!event) return 'speech unknown'
+  const parts = [
+    event.error || event.errCode || event.code || '',
+    event.message || event.errMsg || ''
+  ].filter(Boolean)
+  return shortText(parts.join(' '), 62) || 'speech unknown'
 }
 
 function queryStringFromPayload(payload) {
@@ -1962,7 +1976,8 @@ export default {
       console.log('[SkyMate] ASR error', event || {})
       this.clearAsrWindow({ stop: true })
       this.setData({
-        asrStatus: 'error',
+        asrStatus: speechErrorStatus('speech-error', event),
+        diagnosticLine: speechErrorDetail(event),
         assistantLine: '这次语音没有成功，可以重试或直接说城市名。'
       })
     }
@@ -2117,9 +2132,10 @@ export default {
       this.clearAsrWindow({ stop: true })
       const target = this.data.selectedObject || FALLBACK_TARGETS[0]
       this.setData({
-        asrStatus: 'detail-error',
+        asrStatus: speechErrorStatus('detail-speech-error', event),
         detailAgentStatus: 'local',
         detailObjectContext: createDetailObjectContext(target, this.data),
+        diagnosticLine: speechErrorDetail(event),
         detailQuestion: '语音没有成功',
         detailAnswer: detailGuideAnswer(target, '我该怎么找？'),
         assistantLine: '语音没有成功，我先按当前星体给出找法。'
