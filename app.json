@@ -1,8 +1,8 @@
 {
   "name": "skymate-aiui-agent",
   "displayName": "SkyMate",
-  "version": "14.0.3-merged.1",
-  "description": "SkyMate robustness build with hardware-safe list navigation",
+  "version": "14.0.4-wx-asr.1",
+  "description": "SkyMate robustness build with wx-first ASR navigation",
   "pages": [
     "pages/index/index"
   ],

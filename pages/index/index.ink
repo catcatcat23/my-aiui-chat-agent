@@ -32,7 +32,7 @@
 </script>
 
 <script setup>
-const BUILD_VERSION = 'v14.0.3-merged.1'
+const BUILD_VERSION = 'v14.0.4-wx-asr.1'
 const SKY_CHART_ENDPOINT = 'https://sky.eunoia.top/sky/chart'
 const GEOCODING_ENDPOINT = 'https://geocoding-api.open-meteo.com/v1/search'
 const HUD_TARGET_SLOT_COUNT = 5
