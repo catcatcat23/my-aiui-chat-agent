@@ -684,12 +684,16 @@ function getRuntimeRoot() {
 
 function getSpeechRecognitionCandidate(root) {
   const runtime = root || getRuntimeRoot()
-  const speechModule = runtime.speech || runtime.aiuiSpeech || runtime.rokidSpeech || {}
-  return runtime.SpeechRecognition ||
-    runtime.webkitSpeechRecognition ||
-    speechModule.SpeechRecognition ||
-    speechModule.recognition ||
-    null
+  const modules = [runtime.speech, runtime.aiuiSpeech, runtime.rokidSpeech]
+  const candidates = [
+    runtime.SpeechRecognition,
+    runtime.webkitSpeechRecognition
+  ]
+  modules.forEach(module => {
+    if (!module) return
+    candidates.push(module.SpeechRecognition, module.webkitSpeechRecognition, module.recognition)
+  })
+  return candidates.find(candidate => typeof candidate === 'function') || null
 }
 
 function safeAssignRecognitionOption(recognition, key, value) {
@@ -703,7 +707,7 @@ function safeAssignRecognitionOption(recognition, key, value) {
 
 function configureSpeechRecognition(recognition) {
   safeAssignRecognitionOption(recognition, 'lang', 'zh-CN')
-  safeAssignRecognitionOption(recognition, 'continuous', true)
+  safeAssignRecognitionOption(recognition, 'continuous', false)
   safeAssignRecognitionOption(recognition, 'interimResults', true)
   safeAssignRecognitionOption(recognition, 'maxAlternatives', 1)
 }
@@ -758,7 +762,7 @@ function extractSpeechRecognitionParts(event) {
 function asrStartOptions() {
   return {
     lang: 'zh-CN',
-    continuous: true,
+    continuous: false,
     interimResults: true,
     timeout: ASR_MAX_LISTEN_MS,
     maxDuration: ASR_MAX_LISTEN_MS,
