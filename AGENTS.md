@@ -1,6 +1,6 @@
 # Agent: SkyMate
 
-* **Version**: 14.0.23-full-overview-list.1
+* **Version**: 14.0.26-fixed-sky-slots.1
 * **Description**: 面向 Rokid AI Glasses 用户的观星语音助手，帮助用户快速判断今晚是否适合观星，以及当前位置大概能看到什么。
 * **Author**: 67097
 

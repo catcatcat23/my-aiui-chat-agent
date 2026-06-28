@@ -32,13 +32,14 @@
 </script>
 
 <script setup>
-const BUILD_VERSION = 'v14.0.23-full-overview-list.1'
+const BUILD_VERSION = 'v14.0.26-fixed-sky-slots.1'
 const SKY_CHART_ENDPOINT = 'https://sky.eunoia.top/sky/chart'
 const GEOCODING_ENDPOINT = 'https://geocoding-api.open-meteo.com/v1/search'
 const HUD_TARGET_SLOT_COUNT = 5
 const SKY_REQUEST_TARGET_LIMIT = 30
 const HUD_BG_SLOT_COUNT = 8
 const SKY_OBJECT_LIMIT = 32
+const SKY_MAP_SLOT_COUNT = SKY_REQUEST_TARGET_LIMIT
 const SKY_MAP_SIZE = 184
 const DISPLAY_TIMEZONE_OFFSET_MINUTES = 8 * 60
 
@@ -51,12 +52,6 @@ const SKY_OPTIONS = {
   include_deep_sky: true
 }
 
-const TARGET_ARRAY_KEYS = [
-  'targets',
-  'recommendations',
-  'recommended'
-]
-
 const SKY_OBJECT_ARRAY_KEYS = [
   'sky_objects',
   'skyObjects',
@@ -66,6 +61,8 @@ const SKY_OBJECT_ARRAY_KEYS = [
   'allObjects',
   'objects',
   'targets',
+  'recommendations',
+  'recommended',
   'planets',
   'bright_stars',
   'stars',
@@ -408,25 +405,6 @@ function chartContainers(source) {
   return containers
 }
 
-function collectTargets(source, bucket) {
-  if (!source) return
-  if (Array.isArray(source)) {
-    source.forEach(item => {
-      if (isSkyObjectCandidate(item)) bucket.push(item)
-    })
-    return
-  }
-  if (typeof source !== 'object') return
-
-  if (isSkyObjectCandidate(source)) bucket.push(source)
-  chartContainers(source).forEach(container => pushTargetArrays(container, bucket, TARGET_ARRAY_KEYS))
-
-  if (source.moon && typeof source.moon === 'object') bucket.push(Object.assign({ type: 'moon' }, source.moon))
-  chartContainers(source).forEach(container => {
-    if (container.moon && typeof container.moon === 'object') bucket.push(Object.assign({ type: 'moon' }, container.moon))
-  })
-}
-
 function normalizeTarget(raw, index) {
   const object = raw || {}
   const name = bestName(object, `目标 ${index + 1}`)
@@ -460,23 +438,7 @@ function normalizeTarget(raw, index) {
   }
 }
 
-function pickTargets(rawChart) {
-  const bucket = []
-  collectTargets(rawChart, bucket)
-  const seen = {}
-  const targets = bucket
-    .map((item, index) => normalizeTarget(item, index))
-    .filter(item => {
-      if (seen[item.key]) return false
-      seen[item.key] = true
-      return true
-    })
-    .sort((left, right) => visibilityScore(left) - visibilityScore(right))
-
-  return targets.length ? targets : FALLBACK_TARGETS
-}
-
-function collectSkyObjects(rawChart, fallbackTargets) {
+function collectSkyObjects(rawChart) {
   const bucket = []
   if (Array.isArray(rawChart)) {
     rawChart.forEach(item => {
@@ -489,9 +451,6 @@ function collectSkyObjects(rawChart, fallbackTargets) {
       if (container.moon && typeof container.moon === 'object') bucket.push(Object.assign({ type: 'moon' }, container.moon))
     })
   }
-  ;(fallbackTargets || []).forEach(item => {
-    if (isSkyObjectCandidate(item)) bucket.push(item)
-  })
   const seen = {}
   const objects = bucket
     .map((item, index) => normalizeTarget(item, index))
@@ -503,18 +462,7 @@ function collectSkyObjects(rawChart, fallbackTargets) {
       return hasAltAz || hasChartPoint
     })
 
-  return (objects.length ? objects : (fallbackTargets || FALLBACK_TARGETS)).slice(0, SKY_OBJECT_LIMIT)
-}
-
-function resolveSkyObjectSource(candidateObjects, visibleObjects, currentObjects, options) {
-  const candidate = Array.isArray(candidateObjects) ? candidateObjects : []
-  const visible = Array.isArray(visibleObjects) ? visibleObjects : []
-  const current = Array.isArray(currentObjects) ? currentObjects : []
-  if (options && options.preferCandidate && candidate.length) return candidate
-  if (current.length >= candidate.length && current.length >= visible.length) return current
-  if (candidate.length >= visible.length && candidate.length) return candidate
-  if (visible.length) return visible
-  return FALLBACK_TARGETS
+  return (objects.length ? objects : FALLBACK_TARGETS).slice(0, SKY_OBJECT_LIMIT)
 }
 
 function skyChartPoint(target, index) {
@@ -650,6 +598,25 @@ function createSkyChartObjects(objects, selectedKey) {
       mapLabel: displayName(target.name, 7)
     })
   })
+}
+
+function createSkyMapSlots(objects, selectedKey) {
+  const source = objects && objects.length ? objects.slice(0, SKY_MAP_SLOT_COUNT) : FALLBACK_TARGETS
+  const slots = {}
+  for (let index = 0; index < SKY_MAP_SLOT_COUNT; index += 1) {
+    const target = source[index]
+    if (!target) {
+      slots[`skyTarget${index}Style`] = hiddenStyle()
+      slots[`skyTarget${index}Class`] = ''
+      continue
+    }
+    const point = skyChartPoint(target, index)
+    const size = skyObjectSize(target)
+    const selectedClass = target.key === selectedKey ? 'selected' : ''
+    slots[`skyTarget${index}Style`] = dotStyle(point, size)
+    slots[`skyTarget${index}Class`] = `${target.typeClass} ${selectedClass}`
+  }
+  return slots
 }
 
 function cityFromText(input) {
@@ -1577,6 +1544,7 @@ export default {
     verdict: 'SkyMate 帮你看今晚星空。',
     condition: '说出城市后，我会给出今晚的观星建议。',
     assistantLine: '可说：今晚苏州能看到什么 / 杭州可以看到金星吗。',
+    heardLine: '',
     diagnosticLine: 'ready',
     requestStatus: 'idle',
     asrStatus: 'idle',
@@ -1599,7 +1567,7 @@ export default {
     visibleObjects: FALLBACK_TARGETS,
     rawSkyObjects: FALLBACK_TARGETS,
     skyObjects: createSkyChartObjects(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key)
-  }, createHudSlots(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key), createSelectedSkyOverlay(FALLBACK_TARGETS[0], 0)),
+  }, createHudSlots(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key), createSkyMapSlots(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key), createSelectedSkyOverlay(FALLBACK_TARGETS[0], 0)),
 
   skyKnowledgeRaw: null,
   detailAgentSession: null,
@@ -1608,6 +1576,7 @@ export default {
   activeUtterance: null,
   recognition: null,
   currentTurnId: 0,
+  voiceTurnMode: '',
   isBusy: false,
   liveTranscript: '',
   finalTranscript: '',
@@ -1635,21 +1604,15 @@ export default {
       const normalizedTargets = Array.isArray(targets) ? targets.map((item, index) => normalizeTarget(item, index)) : []
       const selected = selectedObjectFromQuery(query.selectedObject, normalizedTargets)
       if (selected) {
-        const cachedObjects = this.data.rawSkyObjects && this.data.rawSkyObjects.length ? this.data.rawSkyObjects : []
-        const baseVisibleObjects = normalizedTargets.length ? normalizedTargets : (cachedObjects.length ? cachedObjects : FALLBACK_TARGETS)
-        const initialVisibleObjects = baseVisibleObjects.some(item => item.key === selected.key)
-          ? baseVisibleObjects
-          : [selected].concat(baseVisibleObjects)
-        const collectedSkyObjects = collectSkyObjects(chart || initialVisibleObjects, initialVisibleObjects)
-        const rawSkyObjects = resolveSkyObjectSource(collectedSkyObjects, initialVisibleObjects, cachedObjects, { preferCandidate: !!chart })
+        const rawSkyObjects = collectSkyObjects(chart || normalizedTargets)
         const visibleObjects = rawSkyObjects.some(item => item.key === selected.key)
           ? rawSkyObjects
           : [selected].concat(rawSkyObjects)
-        const skyObjects = createSkyChartObjects(rawSkyObjects, selected.key)
         const locationName = text(query.locationName || query.city || query.location, this.data.locationName)
         const generatedAt = safeGeneratedAt(readChartTimeValue(chart))
         const topMetaLine = createTopMetaLine(generatedAt)
         const observationMetaLine = createObservationMetaLine(locationName, generatedAt)
+        const selectionState = this.createSelectionState(selected, visibleObjects, rawSkyObjects)
         const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
           source: chart ? 'api' : 'page-query',
           reliable: !!chart,
@@ -1671,17 +1634,11 @@ export default {
           locationName,
           topMetaLine,
           observationMetaLine,
-          visibleObjects,
-          rawSkyObjects,
-          selectedKey: selected.key,
-          selectedIndex: Math.max(0, visibleObjects.findIndex(item => item.key === selected.key)),
-          selectedObject: selected,
-          skyObjects,
           skyKnowledgeBase: knowledge,
           assistantLine: `正在围绕 ${selected.name} 回答。`,
           requestStatus: 'detail query',
           diagnosticLine: selected.key
-        }, createHudSlots(visibleObjects, selected.key), createSelectedSkyOverlay(selected, 0), createDetailState(selected, this.data)))
+        }, selectionState))
         this.applyMode('detail')
         return
       }
@@ -1858,6 +1815,7 @@ export default {
     this.isBusy = false
     this.liveTranscript = ''
     this.finalTranscript = ''
+    this.voiceTurnMode = ''
     this.disposeRecognition()
     this.setData({
       asrStatus: reason ? `cancel:${reason}` : 'cancelled'
@@ -1888,6 +1846,7 @@ export default {
       console.log('[SkyMate] ASR result', source, { finalTranscript: this.finalTranscript, liveTranscript: this.liveTranscript, event: event || {} })
       this.setData({
         asrStatus: displayValue ? 'listening' : 'empty',
+        heardLine: displayValue ? asrTranscriptLine(displayValue) : this.data.heardLine,
         assistantLine: displayValue ? asrTranscriptLine(displayValue) : '我在听，请继续说完整问题。'
       })
       this.clearAsrIdleTimer()
@@ -1929,6 +1888,7 @@ export default {
       this.finalTranscript = ''
       this.setData({
         asrStatus: transcript ? 'success' : 'empty',
+        heardLine: transcript ? asrTranscriptLine(transcript) : '',
         assistantLine: transcript ? asrTranscriptLine(transcript) : '这次没有听清，请重新说一遍。',
         diagnosticLine: `asr-end:${source}`
       })
@@ -1956,10 +1916,12 @@ export default {
     this.isBusy = true
     this.liveTranscript = ''
     this.finalTranscript = ''
+    this.voiceTurnMode = ''
     this.reportEvent(`voiceTurn:${eventSource}`)
 
     const mode = this.data.mode
-    if (mode !== 'overview' && mode !== 'detail') {
+    this.voiceTurnMode = mode
+    if (mode !== 'detail') {
       this.applyMode('chat')
     }
     this.setData({
@@ -2202,9 +2164,11 @@ export default {
   async handleUserText(input) {
     this.reportEvent('handleUserText')
     const questionText = text(input, '').trim()
+    const turnMode = this.voiceTurnMode || this.data.mode
+    this.voiceTurnMode = ''
     if (!questionText) return this.promptForCity('empty-voice')
-    if (this.data.mode === 'detail') return this.askDetailAgent(questionText, 'voice-detail')
-    if (this.data.mode === 'overview') return this.handleOverviewQuestion(questionText)
+    if (turnMode === 'detail') return this.askDetailAgent(questionText, 'voice-detail')
+    if (turnMode === 'overview') return this.handleOverviewQuestion(questionText)
     return this.handleHomeLocationQuery(questionText)
   },
 
@@ -2443,27 +2407,39 @@ export default {
     return this.promptForCity('location-required')
   },
 
+  createSelectionState(target, objects, rawObjects, pageData) {
+    const visibleObjects = objects && objects.length ? objects : (this.data.visibleObjects && this.data.visibleObjects.length ? this.data.visibleObjects : FALLBACK_TARGETS)
+    const skyObjects = rawObjects && rawObjects.length ? rawObjects : (this.data.rawSkyObjects && this.data.rawSkyObjects.length ? this.data.rawSkyObjects : visibleObjects)
+    const selected = visibleObjects.find(item => target && item.key === target.key) ||
+      skyObjects.find(item => target && item.key === target.key) ||
+      visibleObjects[0] ||
+      skyObjects[0] ||
+      FALLBACK_TARGETS[0]
+    const selectedIndex = Math.max(0, visibleObjects.findIndex(item => item.key === selected.key))
+    return Object.assign({
+      rawSkyObjects: skyObjects,
+      visibleObjects,
+      selectedIndex,
+      selectedKey: selected.key,
+      selectedObject: selected,
+      skyObjects: createSkyChartObjects(skyObjects, selected.key)
+    }, createHudSlots(visibleObjects, selected.key), createSkyMapSlots(skyObjects, selected.key), createSelectedSkyOverlay(selected, selectedIndex), createDetailState(selected, pageData || this.data))
+  },
+
   switchSelectedObject(intent) {
     const targets = this.data.visibleObjects && this.data.visibleObjects.length ? this.data.visibleObjects : FALLBACK_TARGETS
     const target = findObjectByHint(intent && intent.targetHint, targets, this.data.selectedKey)
     if (!target) return this.askGeneralAgent(text(intent && intent.targetHint, '换一个'))
-    const index = Math.max(0, targets.findIndex(item => item.key === target.key))
-    const rawObjects = resolveSkyObjectSource(null, targets, this.data.rawSkyObjects)
     this.destroyDetailAgentSession()
     const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
       objects: targets,
       selectedObject: target
     }, Object.assign({}, this.data, { visibleObjects: targets, selectedObject: target }))
     this.setData(Object.assign({
-      selectedIndex: index,
-      selectedKey: target.key,
-      selectedObject: target,
-      rawSkyObjects: rawObjects,
-      skyObjects: createSkyChartObjects(rawObjects, target.key),
       skyKnowledgeBase: knowledge,
       detailChatHistory: [],
       assistantLine: `已切换到 ${target.name}，可以继续追问。`
-    }, createHudSlots(targets, target.key), createSelectedSkyOverlay(target, index), createDetailState(target, this.data)))
+    }, this.createSelectionState(target, targets)))
     this.applyMode('detail')
     return target
   },
@@ -2712,13 +2688,9 @@ export default {
     const chart = options && options.chart
     const providedTargets = options && options.targets
     const locationName = text(options && options.locationName, '观测位置')
-    const targets = providedTargets ? providedTargets.map((item, index) => normalizeTarget(item, index)) : pickTargets(chart)
-    const collectedSkyObjects = collectSkyObjects(chart || providedTargets, targets)
-    const skyObjects = resolveSkyObjectSource(collectedSkyObjects, targets, this.data.rawSkyObjects, { preferCandidate: !!chart })
-    const visibleObjects = skyObjects.length ? skyObjects : targets
-    const preferredFirst = targets[0] || visibleObjects[0] || FALLBACK_TARGETS[0]
-    const first = visibleObjects.find(item => item.key === preferredFirst.key) || preferredFirst
-    const selectedIndex = Math.max(0, visibleObjects.findIndex(item => item.key === first.key))
+    const visibleObjects = collectSkyObjects(chart || providedTargets)
+    const skyObjects = visibleObjects
+    const first = visibleObjects[0] || FALLBACK_TARGETS[0]
     const source = text(options && options.source, 'sky-chart')
     const place = (options && options.place) || this.data.currentPlace || { name: locationName }
     const generatedAt = safeGeneratedAt(readChartTimeValue(chart))
@@ -2726,6 +2698,14 @@ export default {
     const observationMetaLine = createObservationMetaLine(locationName, generatedAt)
     const verdict = '今晚推荐'
     const condition = '城市里优先看亮星、行星和月亮；深空目标更适合望远镜或暗处。'
+    const detailPageData = {
+      locationName,
+      topMetaLine,
+      observationMetaLine,
+      verdict: displayText(verdict, 12),
+      condition
+    }
+    const selectionState = this.createSelectionState(first, visibleObjects, skyObjects, detailPageData)
     const pageData = Object.assign({}, this.data, {
       locationName,
       topMetaLine,
@@ -2734,7 +2714,7 @@ export default {
       condition,
       visibleObjects,
       rawSkyObjects: skyObjects,
-      selectedObject: first
+      selectedObject: selectionState.selectedObject
     })
     const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
       source: 'api',
@@ -2743,20 +2723,14 @@ export default {
       location: place,
       query: options && options.query,
       objects: visibleObjects,
-      selectedObject: first
+      selectedObject: selectionState.selectedObject
     }, pageData)
 
     this.skyKnowledgeRaw = chart || null
 
     this.setData(Object.assign({
       currentPlace: place,
-      visibleObjects,
-      rawSkyObjects: skyObjects,
-      selectedKey: first.key,
-      selectedIndex,
-      selectedObject: first,
       locationName,
-      skyObjects: createSkyChartObjects(skyObjects, first.key),
       skyKnowledgeBase: knowledge,
       topMetaLine,
       observationMetaLine,
@@ -2764,14 +2738,8 @@ export default {
       condition,
       assistantLine: '已筛出最适合普通用户看的目标。',
       requestStatus: displayMeta(`ok ${source}`, 18),
-      diagnosticLine: `list=${visibleObjects.length} sky=${skyObjects.length} rec=${targets.length}`
-    }, createHudSlots(visibleObjects, first.key), createSelectedSkyOverlay(first, selectedIndex), createDetailState(first, {
-      locationName,
-      topMetaLine,
-      observationMetaLine,
-      verdict: displayText(verdict, 12),
-      condition
-    })))
+      diagnosticLine: `list=${visibleObjects.length} sky=${skyObjects.length}`
+    }, selectionState))
     this.applyMode('overview')
   },
 
@@ -2783,6 +2751,14 @@ export default {
     const verdict = '本地推荐'
     const condition = '下面是一般情况下较容易尝试的亮目标，不代表观测位置和当前时间的精确结果。'
     const fallbackPlace = this.data.currentPlace || { name: locationName }
+    const detailPageData = {
+      locationName,
+      topMetaLine,
+      observationMetaLine,
+      verdict: displayText(verdict, 12),
+      condition
+    }
+    const selectionState = this.createSelectionState(FALLBACK_TARGETS[0], FALLBACK_TARGETS, FALLBACK_TARGETS, detailPageData)
     const pageData = Object.assign({}, this.data, {
       locationName,
       topMetaLine,
@@ -2803,12 +2779,6 @@ export default {
       selectedObject: FALLBACK_TARGETS[0]
     }, pageData)
     this.setData(Object.assign({
-      visibleObjects: FALLBACK_TARGETS,
-      rawSkyObjects: FALLBACK_TARGETS,
-      selectedKey: FALLBACK_TARGETS[0].key,
-      selectedIndex: 0,
-      selectedObject: FALLBACK_TARGETS[0],
-      skyObjects: createSkyChartObjects(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key),
       skyKnowledgeBase: knowledge,
       locationName,
       topMetaLine,
@@ -2818,13 +2788,7 @@ export default {
       assistantLine: '实时星图暂时不可用，下面只是非实时兜底建议。',
       requestStatus: 'fallback',
       diagnosticLine: shortText(reason || 'fetch failed', 62)
-    }, createHudSlots(FALLBACK_TARGETS, FALLBACK_TARGETS[0].key), createSelectedSkyOverlay(FALLBACK_TARGETS[0], 0), createDetailState(FALLBACK_TARGETS[0], {
-      locationName,
-      topMetaLine,
-      observationMetaLine,
-      verdict: displayText(verdict, 12),
-      condition
-    })))
+    }, selectionState))
     this.applyMode('overview')
   },
 
@@ -2933,27 +2897,15 @@ export default {
   },
 
   restoreOverviewState() {
-    const rawObjects = resolveSkyObjectSource(null, this.data.visibleObjects, this.data.rawSkyObjects)
     const visibleObjects = this.data.visibleObjects && this.data.visibleObjects.length
       ? this.data.visibleObjects
-      : rawObjects
+      : (this.data.rawSkyObjects && this.data.rawSkyObjects.length ? this.data.rawSkyObjects : FALLBACK_TARGETS)
     const requestedKey = this.data.selectedKey || (this.data.selectedObject && this.data.selectedObject.key)
-    const selected = visibleObjects.find(item => item.key === requestedKey) ||
-      rawObjects.find(item => item.key === requestedKey) ||
-      visibleObjects[0] ||
-      rawObjects[0] ||
-      FALLBACK_TARGETS[0]
-    const selectedIndex = Math.max(0, visibleObjects.findIndex(item => item.key === selected.key))
+    const selected = visibleObjects.find(item => item.key === requestedKey) || visibleObjects[0] || FALLBACK_TARGETS[0]
     this.setData(Object.assign({
       mode: 'overview',
-      pageTag: '今晚推荐',
-      rawSkyObjects: rawObjects,
-      visibleObjects,
-      selectedObject: selected,
-      selectedKey: selected.key,
-      selectedIndex,
-      skyObjects: createSkyChartObjects(rawObjects, selected.key)
-    }, createHudSlots(visibleObjects, selected.key), createSelectedSkyOverlay(selected, selectedIndex)))
+      pageTag: '今晚推荐'
+    }, this.createSelectionState(selected, visibleObjects)))
   },
 
   moveSelection(offset) {
@@ -2963,7 +2915,6 @@ export default {
     const currentIndex = Math.max(0, targets.findIndex(item => item.key === this.data.selectedKey))
     const nextIndex = (currentIndex + offset + targets.length) % targets.length
     const target = targets[nextIndex] || targets[0] || FALLBACK_TARGETS[0]
-    const rawObjects = resolveSkyObjectSource(null, targets, this.data.rawSkyObjects)
     this.reportEvent(`focus:${target.key}`)
     this.destroyDetailAgentSession()
     const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
@@ -2971,14 +2922,9 @@ export default {
       selectedObject: target
     }, Object.assign({}, this.data, { visibleObjects: targets, selectedObject: target }))
     this.setData(Object.assign({
-      selectedIndex: nextIndex,
-      selectedKey: target.key,
-      selectedObject: target,
-      rawSkyObjects: rawObjects,
-      skyObjects: createSkyChartObjects(rawObjects, target.key),
       skyKnowledgeBase: knowledge,
       detailChatHistory: []
-    }, createHudSlots(targets, target.key), createSelectedSkyOverlay(target, nextIndex), createDetailState(target, this.data)))
+    }, this.createSelectionState(target, targets)))
   },
 
   selectObject(event) {
@@ -2989,8 +2935,6 @@ export default {
     const key = dataset.key || attributes['data-key'] || this.data.selectedKey
     const allObjects = (this.data.visibleObjects || []).concat(this.data.rawSkyObjects || [])
     const target = allObjects.find(item => item.key === key) || this.data.visibleObjects[0] || FALLBACK_TARGETS[0]
-    const index = Math.max(0, this.data.visibleObjects.findIndex(item => item.key === target.key))
-    const rawObjects = resolveSkyObjectSource(null, this.data.visibleObjects, this.data.rawSkyObjects)
     this.reportEvent(`selectObject:${key}`)
     this.destroyDetailAgentSession()
     const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
@@ -2998,14 +2942,9 @@ export default {
       selectedObject: target
     }, Object.assign({}, this.data, { selectedObject: target }))
     this.setData(Object.assign({
-      selectedIndex: index,
-      selectedKey: target.key,
-      selectedObject: target,
-      rawSkyObjects: rawObjects,
-      skyObjects: createSkyChartObjects(rawObjects, target.key),
       skyKnowledgeBase: knowledge,
       detailChatHistory: []
-    }, createHudSlots(this.data.visibleObjects, target.key), createSelectedSkyOverlay(target, index), createDetailState(target, this.data)))
+    }, this.createSelectionState(target, this.data.visibleObjects)))
     this.applyMode('detail')
   }
 }
@@ -3035,13 +2974,36 @@ export default {
         <text class="cardinal cardinal-e">E</text>
         <text class="cardinal cardinal-s">S</text>
         <text class="cardinal cardinal-w">W</text>
-        <view
-          class="sky-target {{ item.typeClass }} {{ item.selectedClass }}"
-          style="{{ item.style }}"
-          ink:for="{{ skyObjects }}"
-          ink:for-item="item"
-          ink:key="key"
-        ></view>
+        <view class="sky-target {{ skyTarget0Class }}" style="{{ skyTarget0Style }}"></view>
+        <view class="sky-target {{ skyTarget1Class }}" style="{{ skyTarget1Style }}"></view>
+        <view class="sky-target {{ skyTarget2Class }}" style="{{ skyTarget2Style }}"></view>
+        <view class="sky-target {{ skyTarget3Class }}" style="{{ skyTarget3Style }}"></view>
+        <view class="sky-target {{ skyTarget4Class }}" style="{{ skyTarget4Style }}"></view>
+        <view class="sky-target {{ skyTarget5Class }}" style="{{ skyTarget5Style }}"></view>
+        <view class="sky-target {{ skyTarget6Class }}" style="{{ skyTarget6Style }}"></view>
+        <view class="sky-target {{ skyTarget7Class }}" style="{{ skyTarget7Style }}"></view>
+        <view class="sky-target {{ skyTarget8Class }}" style="{{ skyTarget8Style }}"></view>
+        <view class="sky-target {{ skyTarget9Class }}" style="{{ skyTarget9Style }}"></view>
+        <view class="sky-target {{ skyTarget10Class }}" style="{{ skyTarget10Style }}"></view>
+        <view class="sky-target {{ skyTarget11Class }}" style="{{ skyTarget11Style }}"></view>
+        <view class="sky-target {{ skyTarget12Class }}" style="{{ skyTarget12Style }}"></view>
+        <view class="sky-target {{ skyTarget13Class }}" style="{{ skyTarget13Style }}"></view>
+        <view class="sky-target {{ skyTarget14Class }}" style="{{ skyTarget14Style }}"></view>
+        <view class="sky-target {{ skyTarget15Class }}" style="{{ skyTarget15Style }}"></view>
+        <view class="sky-target {{ skyTarget16Class }}" style="{{ skyTarget16Style }}"></view>
+        <view class="sky-target {{ skyTarget17Class }}" style="{{ skyTarget17Style }}"></view>
+        <view class="sky-target {{ skyTarget18Class }}" style="{{ skyTarget18Style }}"></view>
+        <view class="sky-target {{ skyTarget19Class }}" style="{{ skyTarget19Style }}"></view>
+        <view class="sky-target {{ skyTarget20Class }}" style="{{ skyTarget20Style }}"></view>
+        <view class="sky-target {{ skyTarget21Class }}" style="{{ skyTarget21Style }}"></view>
+        <view class="sky-target {{ skyTarget22Class }}" style="{{ skyTarget22Style }}"></view>
+        <view class="sky-target {{ skyTarget23Class }}" style="{{ skyTarget23Style }}"></view>
+        <view class="sky-target {{ skyTarget24Class }}" style="{{ skyTarget24Style }}"></view>
+        <view class="sky-target {{ skyTarget25Class }}" style="{{ skyTarget25Style }}"></view>
+        <view class="sky-target {{ skyTarget26Class }}" style="{{ skyTarget26Style }}"></view>
+        <view class="sky-target {{ skyTarget27Class }}" style="{{ skyTarget27Style }}"></view>
+        <view class="sky-target {{ skyTarget28Class }}" style="{{ skyTarget28Style }}"></view>
+        <view class="sky-target {{ skyTarget29Class }}" style="{{ skyTarget29Style }}"></view>
         <text
           class="selected-sky-marker {{ selectedObject.typeClass }}"
           style="{{ selectedSkyMarkerStyle }}"
@@ -3073,6 +3035,7 @@ export default {
     <view class="content loading-panel" ink:if="{{ mode === 'loading' }}">
       <text class="headline">正在查星空</text>
       <text class="body">{{ assistantLine }}</text>
+      <text class="debug-line" ink:if="{{ heardLine }}">{{ heardLine }}</text>
       <text class="debug-line">{{ diagnosticLine }}</text>
     </view>
 

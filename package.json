@@ -1,6 +1,6 @@
 {
   "name": "skymate-aiui-agent",
-  "version": "14.0.23-full-overview-list.1",
+  "version": "14.0.26-fixed-sky-slots.1",
   "description": "SkyMate AIUI agent for astronomy discovery cards",
   "main": "app.js",
   "private": true,

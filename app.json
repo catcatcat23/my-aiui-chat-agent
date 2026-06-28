@@ -1,7 +1,7 @@
 {
   "name": "skymate-aiui-agent",
   "displayName": "SkyMate",
-  "version": "14.0.23-full-overview-list.1",
+  "version": "14.0.26-fixed-sky-slots.1",
   "description": "SkyMate early ASR with full debug logs",
   "pages": [
     "pages/index/index"
