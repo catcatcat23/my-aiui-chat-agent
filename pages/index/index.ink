@@ -32,7 +32,7 @@
 </script>
 
 <script setup>
-const BUILD_VERSION = 'v14.0.17-short-place-asr.1'
+const BUILD_VERSION = 'v14.0.23-full-overview-list.1'
 const SKY_CHART_ENDPOINT = 'https://sky.eunoia.top/sky/chart'
 const GEOCODING_ENDPOINT = 'https://geocoding-api.open-meteo.com/v1/search'
 const HUD_TARGET_SLOT_COUNT = 5
@@ -51,12 +51,41 @@ const SKY_OPTIONS = {
   include_deep_sky: true
 }
 
+const TARGET_ARRAY_KEYS = [
+  'targets',
+  'recommendations',
+  'recommended'
+]
+
+const SKY_OBJECT_ARRAY_KEYS = [
+  'sky_objects',
+  'skyObjects',
+  'visible_objects',
+  'visibleObjects',
+  'all_objects',
+  'allObjects',
+  'objects',
+  'targets',
+  'planets',
+  'bright_stars',
+  'stars',
+  'deep_sky',
+  'deepSky',
+  'constellations',
+  'meteorShowers'
+]
+
+const CHART_CONTAINER_KEYS = [
+  'sky_chart',
+  'skyChart',
+  'chart',
+  'data',
+  'result'
+]
+
 const ASR_TRANSCRIPT_DISPLAY_LIMIT = 22
 const ASR_DETAIL_QUESTION_DISPLAY_LIMIT = 30
-const ASR_MIN_LISTEN_MS = 2600
-const ASR_SILENCE_SUBMIT_MS = 2600
-const ASR_MAX_LISTEN_MS = 10000
-const ASR_SHORT_FINAL_GRACE_MS = 1800
+const ASR_IDLE_TIMEOUT_MS = 1300
 const MODEL_GENERAL_DISPLAY_LIMIT = 34
 const MODEL_DETAIL_DISPLAY_LIMIT = 72
 const TTS_MAX_CHARS = 96
@@ -334,40 +363,68 @@ function visibilityScore(target) {
   return typeScore * 10 + magScore + altBonus
 }
 
+function isSkyObjectCandidate(object) {
+  if (!object || typeof object !== 'object') return false
+  const name = bestName(object, '')
+  if (!name) return false
+  const azimuth = readAny(object, ['azimuth', 'azimuth_deg', 'azimuthDeg', 'az'])
+  const altitude = readAny(object, ['altitude', 'altitude_deg', 'altitudeDeg', 'alt', 'elevation'])
+  const chartX = readAny(object, ['chart_x', 'chartX', 'x'])
+  const chartY = readAny(object, ['chart_y', 'chartY', 'y'])
+  return (Number.isFinite(numeric(azimuth, NaN)) && Number.isFinite(numeric(altitude, NaN))) ||
+    (Number.isFinite(numeric(chartX, NaN)) && Number.isFinite(numeric(chartY, NaN)))
+}
+
+function pushTargetArrays(source, bucket, keys) {
+  if (!source || typeof source !== 'object') return
+  keys.forEach(key => {
+    if (Array.isArray(source[key])) {
+      source[key].forEach(item => {
+        if (isSkyObjectCandidate(item)) bucket.push(item)
+      })
+    }
+  })
+}
+
+function chartContainers(source) {
+  if (!source || typeof source !== 'object') return []
+  const containers = [source]
+  CHART_CONTAINER_KEYS.forEach(key => {
+    const value = source[key]
+    if (value && typeof value === 'object' && value !== source) containers.push(value)
+  })
+  if (source.data && source.data !== source) {
+    CHART_CONTAINER_KEYS.forEach(key => {
+      const value = source.data[key]
+      if (value && typeof value === 'object' && value !== source.data) containers.push(value)
+    })
+  }
+  if (source.result && source.result !== source) {
+    CHART_CONTAINER_KEYS.forEach(key => {
+      const value = source.result[key]
+      if (value && typeof value === 'object' && value !== source.result) containers.push(value)
+    })
+  }
+  return containers
+}
+
 function collectTargets(source, bucket) {
   if (!source) return
   if (Array.isArray(source)) {
-    source.forEach(item => bucket.push(item))
+    source.forEach(item => {
+      if (isSkyObjectCandidate(item)) bucket.push(item)
+    })
     return
   }
   if (typeof source !== 'object') return
 
-  const arrays = [
-    'targets',
-    'objects',
-    'visibleObjects',
-    'visible_objects',
-    'recommendations',
-    'recommended',
-    'planets',
-    'bright_stars',
-    'stars',
-    'deep_sky',
-    'deepSky',
-    'constellations',
-    'meteorShowers'
-  ]
-
-  arrays.forEach(name => {
-    if (Array.isArray(source[name])) source[name].forEach(item => bucket.push(item))
-  })
+  if (isSkyObjectCandidate(source)) bucket.push(source)
+  chartContainers(source).forEach(container => pushTargetArrays(container, bucket, TARGET_ARRAY_KEYS))
 
   if (source.moon && typeof source.moon === 'object') bucket.push(Object.assign({ type: 'moon' }, source.moon))
-  if (source.sky_chart && source.sky_chart !== source) collectTargets(source.sky_chart, bucket)
-  if (source.skyChart && source.skyChart !== source) collectTargets(source.skyChart, bucket)
-  if (source.chart && source.chart !== source) collectTargets(source.chart, bucket)
-  if (source.data && source.data !== source) collectTargets(source.data, bucket)
-  if (source.result && source.result !== source) collectTargets(source.result, bucket)
+  chartContainers(source).forEach(container => {
+    if (container.moon && typeof container.moon === 'object') bucket.push(Object.assign({ type: 'moon' }, container.moon))
+  })
 }
 
 function normalizeTarget(raw, index) {
@@ -421,18 +478,43 @@ function pickTargets(rawChart) {
 
 function collectSkyObjects(rawChart, fallbackTargets) {
   const bucket = []
-  collectTargets(rawChart, bucket)
-  ;(fallbackTargets || []).forEach(item => bucket.push(item))
+  if (Array.isArray(rawChart)) {
+    rawChart.forEach(item => {
+      if (isSkyObjectCandidate(item)) bucket.push(item)
+    })
+  } else {
+    chartContainers(rawChart).forEach(container => {
+      if (isSkyObjectCandidate(container)) bucket.push(container)
+      pushTargetArrays(container, bucket, SKY_OBJECT_ARRAY_KEYS)
+      if (container.moon && typeof container.moon === 'object') bucket.push(Object.assign({ type: 'moon' }, container.moon))
+    })
+  }
+  ;(fallbackTargets || []).forEach(item => {
+    if (isSkyObjectCandidate(item)) bucket.push(item)
+  })
   const seen = {}
   const objects = bucket
     .map((item, index) => normalizeTarget(item, index))
     .filter(item => {
       if (seen[item.key]) return false
       seen[item.key] = true
-      return Number.isFinite(item.azimuth) && Number.isFinite(item.altitudeDeg) && item.altitudeDeg >= 0
+      const hasAltAz = Number.isFinite(item.azimuth) && Number.isFinite(item.altitudeDeg) && item.altitudeDeg >= 0
+      const hasChartPoint = Number.isFinite(item.chartX) && Number.isFinite(item.chartY)
+      return hasAltAz || hasChartPoint
     })
 
   return (objects.length ? objects : (fallbackTargets || FALLBACK_TARGETS)).slice(0, SKY_OBJECT_LIMIT)
+}
+
+function resolveSkyObjectSource(candidateObjects, visibleObjects, currentObjects, options) {
+  const candidate = Array.isArray(candidateObjects) ? candidateObjects : []
+  const visible = Array.isArray(visibleObjects) ? visibleObjects : []
+  const current = Array.isArray(currentObjects) ? currentObjects : []
+  if (options && options.preferCandidate && candidate.length) return candidate
+  if (current.length >= candidate.length && current.length >= visible.length) return current
+  if (candidate.length >= visible.length && candidate.length) return candidate
+  if (visible.length) return visible
+  return FALLBACK_TARGETS
 }
 
 function skyChartPoint(target, index) {
@@ -691,25 +773,8 @@ async function responseErrorText(response, prefix) {
   }
 }
 
-function getRuntimeRoot() {
-  if (typeof globalThis !== 'undefined') return globalThis
-  if (typeof window !== 'undefined') return window
-  if (typeof self !== 'undefined') return self
-  return {}
-}
-
-function getSpeechRecognitionCandidate(root) {
-  const runtime = root || getRuntimeRoot()
-  const modules = [runtime.speech, runtime.aiuiSpeech, runtime.rokidSpeech]
-  const candidates = [
-    runtime.SpeechRecognition,
-    runtime.webkitSpeechRecognition
-  ]
-  modules.forEach(module => {
-    if (!module) return
-    candidates.push(module.SpeechRecognition, module.webkitSpeechRecognition, module.recognition)
-  })
-  return candidates.find(candidate => typeof candidate === 'function') || null
+function detectRecognitionSupport() {
+  return typeof SpeechRecognition !== 'undefined'
 }
 
 function safeAssignRecognitionOption(recognition, key, value) {
@@ -726,21 +791,6 @@ function configureSpeechRecognition(recognition) {
   safeAssignRecognitionOption(recognition, 'continuous', false)
   safeAssignRecognitionOption(recognition, 'interimResults', true)
   safeAssignRecognitionOption(recognition, 'maxAlternatives', 1)
-}
-
-const ASR_SHORT_QUERY_WORDS = [
-  '月亮', '月球', '火星', '木星', '金星', '土星', '水星',
-  '太阳', '星星', '星图', '观星', '猎户座', '北斗', '银河',
-  '苏州', '太仓', '厦门', '福州', '海南', '上海', '杭州', '南京',
-  '北京', '长沙', '广州', '深圳', '成都', '重庆', '武汉', '西安',
-  '贵州', '贵阳', '青海', '甘肃', '云南', '昆明', '西藏', '拉萨'
-]
-
-function isAllowedShortAsrQuery(value) {
-  const normalized = text(value, '').replace(/[，。！？、,.!?\s]/g, '')
-  if (normalized.length >= 3) return true
-  if (cityFromText(normalized) || isLikelyLocationCandidate(normalized)) return true
-  return ASR_SHORT_QUERY_WORDS.indexOf(normalized) >= 0
 }
 
 function extractSpeechRecognitionParts(event) {
@@ -785,12 +835,10 @@ function cleanSpeechText(value) {
     .slice(0, TTS_MAX_CHARS)
 }
 
-function getSpeechSynthesisCandidate(root) {
-  const runtime = root || getRuntimeRoot()
-  const speechModule = runtime.speech || runtime.aiuiSpeech || runtime.rokidSpeech || {}
+function getSpeechSynthesisCandidate() {
   return {
-    synthesis: runtime.speechSynthesis || speechModule.speechSynthesis || speechModule.synthesis || null,
-    Utterance: runtime.SpeechSynthesisUtterance || speechModule.SpeechSynthesisUtterance || speechModule.Utterance || null
+    synthesis: typeof speechSynthesis !== 'undefined' ? speechSynthesis : null,
+    Utterance: typeof SpeechSynthesisUtterance !== 'undefined' ? SpeechSynthesisUtterance : null
   }
 }
 
@@ -918,9 +966,8 @@ function createDetailLocate(target) {
   return displayText(text(object.locate, `朝${text(object.direction, '开阔天空')}方向寻找较亮、稳定的光点。`), 40)
 }
 
-function getLanguageModelCandidate(root) {
-  const runtime = root || getRuntimeRoot()
-  return runtime.LanguageModel || null
+function getLanguageModelCandidate() {
+  return typeof LanguageModel !== 'undefined' ? LanguageModel : null
 }
 
 function parseModelJson(value) {
@@ -1559,17 +1606,12 @@ export default {
   generalAgentSession: null,
   skyRequestId: 0,
   activeUtterance: null,
-  activeAsrRecognizer: null,
-  activeAsrSubmitTimer: null,
-  activeAsrMaxTimer: null,
-  activeAsrSubmitToken: 0,
-  activeAsrStartedAt: 0,
-  activeAsrLastInputAt: 0,
-  activeAsrLatestText: '',
-  activeAsrInterimText: '',
-  activeAsrHasFinalText: false,
-  activeAsrSubmitOptions: null,
-  activeAsrSubmitted: false,
+  recognition: null,
+  currentTurnId: 0,
+  isBusy: false,
+  liveTranscript: '',
+  finalTranscript: '',
+  asrIdleTimer: null,
   pendingConfirmTimer: null,
   pendingConfirmToken: 0,
   pageActive: true,
@@ -1595,10 +1637,14 @@ export default {
       if (selected) {
         const cachedObjects = this.data.rawSkyObjects && this.data.rawSkyObjects.length ? this.data.rawSkyObjects : []
         const baseVisibleObjects = normalizedTargets.length ? normalizedTargets : (cachedObjects.length ? cachedObjects : FALLBACK_TARGETS)
-        const visibleObjects = baseVisibleObjects.some(item => item.key === selected.key)
+        const initialVisibleObjects = baseVisibleObjects.some(item => item.key === selected.key)
           ? baseVisibleObjects
           : [selected].concat(baseVisibleObjects)
-        const rawSkyObjects = collectSkyObjects(chart || visibleObjects, visibleObjects)
+        const collectedSkyObjects = collectSkyObjects(chart || initialVisibleObjects, initialVisibleObjects)
+        const rawSkyObjects = resolveSkyObjectSource(collectedSkyObjects, initialVisibleObjects, cachedObjects, { preferCandidate: !!chart })
+        const visibleObjects = rawSkyObjects.some(item => item.key === selected.key)
+          ? rawSkyObjects
+          : [selected].concat(rawSkyObjects)
         const skyObjects = createSkyChartObjects(rawSkyObjects, selected.key)
         const locationName = text(query.locationName || query.city || query.location, this.data.locationName)
         const generatedAt = safeGeneratedAt(readChartTimeValue(chart))
@@ -1695,7 +1741,7 @@ export default {
     this.detailSessionToken += 1
     this.generalSessionToken += 1
     this.clearPendingConfirm()
-    this.clearAsrWindow({ stop: true })
+    this.cancelRecognition('unload')
     this.stopAnswerSpeech()
     this.destroyDetailAgentSession()
     if (this.generalAgentSession && typeof this.generalAgentSession.destroy === 'function') {
@@ -1707,12 +1753,7 @@ export default {
   onVoiceWakeup(event) {
     console.log('[SkyMate] voice wakeup', event || {})
     const keyword = text(event && event.keyword, 'leqi')
-    if (keyword && keyword !== 'leqi') {
-      this.reportEvent(`voiceWakeupIgnored:${keyword}`)
-      return
-    }
-    this.reportEvent('voiceWakeup')
-    this.startUnifiedAsr()
+    this.beginVoiceTurn('wakeup', keyword)
   },
 
   onKeyUp(event) {
@@ -1787,353 +1828,157 @@ export default {
     this.applyMode('chat')
   },
 
-  stopActiveAsrRecognizer() {
-    const recognizer = this.activeAsrRecognizer
-    this.activeAsrRecognizer = null
-    if (!recognizer) return
+  clearAsrIdleTimer() {
+    if (!this.asrIdleTimer) return
+    clearTimeout(this.asrIdleTimer)
+    this.asrIdleTimer = null
+  },
+
+  disposeRecognition() {
+    const recognition = this.recognition
+    this.recognition = null
+    this.clearAsrIdleTimer()
+    if (!recognition) return
+    recognition.onstart = null
+    recognition.onaudiostart = null
+    recognition.onsoundstart = null
+    recognition.onspeechstart = null
+    recognition.onresult = null
+    recognition.onerror = null
+    recognition.onend = null
     try {
-      if (typeof recognizer.stop === 'function') {
-        recognizer.stop()
-        return
-      }
-      if (typeof recognizer.stopRecognition === 'function') {
-        recognizer.stopRecognition()
-        return
-      }
-      if (typeof recognizer.abort === 'function') recognizer.abort()
+      if (typeof recognition.abort === 'function') recognition.abort()
     } catch (error) {
-      console.log('[SkyMate] ASR stop ignored', error || {})
+      console.log('[SkyMate] recognition abort ignored', error || {})
     }
   },
 
-  clearAsrWindow(options) {
-    if (this.activeAsrSubmitTimer) {
-      clearTimeout(this.activeAsrSubmitTimer)
-      this.activeAsrSubmitTimer = null
-    }
-    if (this.activeAsrMaxTimer) {
-      clearTimeout(this.activeAsrMaxTimer)
-      this.activeAsrMaxTimer = null
-    }
-    this.activeAsrSubmitToken += 1
-    if (options && options.stop) this.stopActiveAsrRecognizer()
-    this.activeAsrStartedAt = 0
-    this.activeAsrLastInputAt = 0
-    this.activeAsrLatestText = ''
-    this.activeAsrInterimText = ''
-    this.activeAsrHasFinalText = false
-    this.activeAsrSubmitOptions = null
-    this.activeAsrSubmitted = false
-  },
-
-  beginAsrWindow(options) {
-    this.clearAsrWindow({ stop: true })
-    const now = Date.now()
-    this.activeAsrSubmitToken += 1
-    this.activeAsrStartedAt = now
-    this.activeAsrLastInputAt = now
-    this.activeAsrLatestText = ''
-    this.activeAsrInterimText = ''
-    this.activeAsrHasFinalText = false
-    this.activeAsrSubmitOptions = options || {}
-    this.activeAsrSubmitted = false
-    const token = this.activeAsrSubmitToken
-
-    if (typeof setTimeout === 'function') {
-      this.activeAsrMaxTimer = setTimeout(() => {
-        if (this.activeAsrSubmitToken !== token || this.activeAsrSubmitted) return
-        this.submitAsrWindow('max')
-      }, ASR_MAX_LISTEN_MS)
-    }
-  },
-
-  recordAsrResult(transcript, options) {
-    if (this.activeAsrSubmitted) return this.activeAsrLatestText
-    if (!this.activeAsrStartedAt) this.beginAsrWindow(options)
-    const value = text(transcript, '').trim()
-    if (value) {
-      this.activeAsrLatestText = value
-      this.activeAsrHasFinalText = !!(options && options.isFinal)
-      this.activeAsrLastInputAt = Date.now()
-    }
-    this.activeAsrSubmitOptions = Object.assign({}, this.activeAsrSubmitOptions || {}, options || {})
-    this.scheduleAsrWindowSubmit()
-    return this.activeAsrLatestText
-  },
-
-  scheduleAsrWindowSubmit() {
-    if (this.activeAsrSubmitted) return
-    if (this.activeAsrSubmitTimer) {
-      clearTimeout(this.activeAsrSubmitTimer)
-      this.activeAsrSubmitTimer = null
-    }
-
-    const now = Date.now()
-    const startedAt = this.activeAsrStartedAt || now
-    const lastInputAt = this.activeAsrLastInputAt || startedAt
-    const submitAt = Math.min(
-      startedAt + ASR_MAX_LISTEN_MS,
-      Math.max(startedAt + ASR_MIN_LISTEN_MS, lastInputAt + ASR_SILENCE_SUBMIT_MS)
-    )
-    const delay = Math.max(0, submitAt - now)
-    const token = this.activeAsrSubmitToken
-
-    if (typeof setTimeout !== 'function') {
-      this.submitAsrWindow('direct')
-      return
-    }
-
-    this.activeAsrSubmitTimer = setTimeout(() => {
-      if (this.activeAsrSubmitToken !== token || this.activeAsrSubmitted) return
-      this.submitAsrWindow('silence')
-    }, delay)
-  },
-
-  submitAsrWindow(reason) {
-    if (this.activeAsrSubmitted) return
-    let value = text(this.activeAsrLatestText, '').trim()
-    const options = this.activeAsrSubmitOptions || {}
-    const successStatus = options.successStatus || (options.detail ? 'detail-success' : 'success')
-    const emptyStatus = options.emptyStatus || (options.detail ? 'detail-empty' : 'empty')
-    const canSubmitShort = isAllowedShortAsrQuery(value)
-    const finalOrFallback = this.activeAsrHasFinalText || !!options.unflaggedResult
-    if (value && !canSubmitShort && reason === 'max') {
-      const rejectedShortText = value
-      value = ''
-      this.activeAsrLatestText = ''
-      this.activeAsrInterimText = ''
-      this.activeAsrHasFinalText = false
-      this.activeAsrSubmitOptions = Object.assign({}, options, { rejectedShortText })
-    } else if (value && !canSubmitShort && (!finalOrFallback || reason !== 'max')) {
-      this.activeAsrLastInputAt = Date.now()
-      this.setData({
-        asrStatus: options.detail ? 'detail-listening' : 'listening',
-        assistantLine: '听到的内容还不完整，请继续说。',
-        diagnosticLine: `asr-hold-short:${reason || 'window'}`
-      })
-      if (typeof setTimeout === 'function') {
-        const token = this.activeAsrSubmitToken
-        this.activeAsrSubmitTimer = setTimeout(() => {
-          if (this.activeAsrSubmitToken !== token || this.activeAsrSubmitted) return
-          this.submitAsrWindow('max')
-        }, ASR_SHORT_FINAL_GRACE_MS)
-      }
-      return
-    }
-
-    this.activeAsrSubmitted = true
-    if (this.activeAsrSubmitTimer) {
-      clearTimeout(this.activeAsrSubmitTimer)
-      this.activeAsrSubmitTimer = null
-    }
-    if (this.activeAsrMaxTimer) {
-      clearTimeout(this.activeAsrMaxTimer)
-      this.activeAsrMaxTimer = null
-    }
-    this.activeAsrSubmitToken += 1
-    this.stopActiveAsrRecognizer()
-
+  cancelRecognition(reason) {
+    this.currentTurnId += 1
+    this.isBusy = false
+    this.liveTranscript = ''
+    this.finalTranscript = ''
+    this.disposeRecognition()
     this.setData({
-      asrStatus: value ? successStatus : emptyStatus,
-      assistantLine: value ? asrTranscriptLine(value) : '这次没有听清，请重新说一遍。',
-      diagnosticLine: `asr-submit:${reason || 'window'}`
+      asrStatus: reason ? `cancel:${reason}` : 'cancelled'
     })
-
-    this.activeAsrStartedAt = 0
-    this.activeAsrLastInputAt = 0
-    this.activeAsrLatestText = ''
-    this.activeAsrInterimText = ''
-    this.activeAsrHasFinalText = false
-    this.activeAsrSubmitOptions = null
-
-    this.handleAsrFinalText(value, options.source || (options.detail ? 'detail' : 'home'), reason)
   },
 
-  resolveAsrSource(source) {
-    if (source === 'detail') return 'detail'
-    if (this.data.mode === 'detail') return 'detail'
-    return 'home'
-  },
+  bindRecognition(turnId, source) {
+    this.disposeRecognition()
+    const recognition = new SpeechRecognition()
+    configureSpeechRecognition(recognition)
+    this.recognition = recognition
 
-  handleAsrFinalText(value, source, reason) {
-    const asrSource = this.resolveAsrSource(source)
-    const finalText = text(value, '').trim()
-    this.reportEvent(`asrFinal:${asrSource}:${reason || 'window'}`)
-
-    if (asrSource === 'detail') {
-      if (finalText) {
-        this.handleConversationInput(finalText, 'voice-detail')
-        return
-      }
-      this.setData({
-        detailAgentStatus: 'ready',
-        detailQuestion: '这次没有听清',
-        detailAnswer: '请重新开始对话并说完整问题。',
-        assistantLine: '这次没有听清，请重新聆听。'
-      })
-      return
-    }
-
-    if (finalText) this.handleConversationInput(finalText, 'voice')
-    else this.setData({ assistantLine: '这次没有听清，请重新聆听。' })
-  },
-
-  startUnifiedAsr(source) {
-    const asrSource = this.resolveAsrSource(source)
-    this.reportEvent(`startUnifiedAsr:${asrSource}`)
-    this.startAsr(asrSource)
-  },
-
-  startAsr(source) {
-    const asrSource = this.resolveAsrSource(source)
-    const isDetail = asrSource === 'detail'
-    this.reportEvent(`startAsr:${asrSource}`)
-    this.beginAsrWindow({
-      source: asrSource,
-      detail: isDetail,
-      successStatus: isDetail ? 'detail-success' : 'success',
-      emptyStatus: isDetail ? 'detail-empty' : 'empty'
-    })
-    if (isDetail) {
-      this.applyMode('detail')
-      this.setData({
-        asrStatus: 'detail-listening',
-        detailAgentStatus: 'listening',
-        detailQuestion: '正在听...',
-        detailAnswer: '说出你想问的问题，比如“我该怎么找它？”',
-        assistantLine: '我在听，可以继续追问当前星体。'
-      })
-    } else {
-      this.applyMode('chat')
+    recognition.onstart = () => {
+      if (turnId !== this.currentTurnId) return
+      console.log('[SkyMate] ASR start', source, turnId)
       this.setData({
         asrStatus: 'listening',
-        assistantLine: '我在听，可以说城市名或观测问题。'
+        diagnosticLine: `asr-start:${source}`
       })
     }
 
-    const Recognition = getSpeechRecognitionCandidate()
-    if (!Recognition) {
-      this.clearAsrWindow({ stop: true })
-      if (isDetail) {
-        this.setData({
-          asrStatus: 'detail-unavailable',
-          detailAgentStatus: 'ready',
-          detailQuestion: '当前环境没有 ASR',
-          detailAnswer: '请检查语音权限后重试。',
-          assistantLine: '当前环境没有 ASR，请检查语音权限。'
-        })
-      } else {
-        this.setData({
-          asrStatus: 'unavailable',
-          assistantLine: '当前环境没有 ASR，请说城市名。'
-        })
-      }
-      return
-    }
-
-    const recognition = new Recognition()
-    configureSpeechRecognition(recognition)
-    this.activeAsrRecognizer = recognition
-    const recognitionToken = this.activeAsrSubmitToken
-
     recognition.onresult = (event) => {
-      if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
+      if (turnId !== this.currentTurnId) return
       const parts = extractSpeechRecognitionParts(event)
-      const displayValue = text(parts.displayText, '').trim()
-      let buffered = this.activeAsrLatestText
-      this.activeAsrInterimText = parts.interimText
-      if (parts.finalText || (!parts.hasResultFlags && displayValue)) {
-        buffered = this.recordAsrResult(parts.finalText || displayValue, {
-          source: asrSource,
-          detail: isDetail,
-          successStatus: isDetail ? 'detail-success' : 'success',
-          emptyStatus: isDetail ? 'detail-empty' : 'empty',
-          isFinal: !!parts.finalText,
-          unflaggedResult: !parts.hasResultFlags
-        })
-      }
-      console.log('[SkyMate] ASR result', asrSource, parts, { buffered, event: event || {} })
-      if (isDetail) {
-        this.setData({
-          asrStatus: displayValue ? 'detail-listening' : 'detail-empty',
-          detailQuestion: displayValue ? asrQuestionLine(displayValue) : '正在听...'
-        })
-      } else {
-        this.setData({
-          asrStatus: displayValue ? 'listening' : 'empty',
-          assistantLine: displayValue ? asrTranscriptLine(displayValue) : '我在听，请继续说完整问题。'
-        })
+      if (parts.finalText) this.finalTranscript = parts.finalText
+      if (parts.interimText || parts.displayText) this.liveTranscript = parts.displayText
+      const displayValue = text(this.finalTranscript || this.liveTranscript, '').trim()
+      console.log('[SkyMate] ASR result', source, { finalTranscript: this.finalTranscript, liveTranscript: this.liveTranscript, event: event || {} })
+      this.setData({
+        asrStatus: displayValue ? 'listening' : 'empty',
+        assistantLine: displayValue ? asrTranscriptLine(displayValue) : '我在听，请继续说完整问题。'
+      })
+      this.clearAsrIdleTimer()
+      if (typeof setTimeout === 'function') {
+        this.asrIdleTimer = setTimeout(() => {
+          if (turnId !== this.currentTurnId || !this.recognition) return
+          try {
+            if (typeof this.recognition.stop === 'function') this.recognition.stop()
+          } catch (error) {
+            console.log('[SkyMate] recognition stop ignored', error || {})
+          }
+        }, ASR_IDLE_TIMEOUT_MS)
       }
     }
 
     recognition.onerror = (event) => {
-      if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
-      console.log('[SkyMate] ASR error', asrSource, event || {})
-      if (this.activeAsrLatestText) {
-        this.submitAsrWindow('error-result')
-        return
-      }
-      this.clearAsrWindow({ stop: true })
-      if (isDetail) {
-        this.setData({
-          asrStatus: speechErrorStatus('detail-speech-error', event),
-          detailAgentStatus: 'ready',
-          diagnosticLine: speechErrorDetail(event),
-          detailQuestion: '语音没有成功',
-          detailAnswer: '请重新开始对话并说完整问题。',
-          assistantLine: '这次语音没有成功，可以重试。'
-        })
-      } else {
-        this.setData({
-          asrStatus: speechErrorStatus('speech-error', event),
-          diagnosticLine: speechErrorDetail(event),
-          assistantLine: '这次语音没有成功，可以重试或直接说城市名。'
-        })
+      if (turnId !== this.currentTurnId) return
+      console.log('[SkyMate] ASR error', source, event || {})
+      const transcript = text(this.finalTranscript || this.liveTranscript, '').trim()
+      this.setData({
+        asrStatus: speechErrorStatus('speech-error', event),
+        diagnosticLine: speechErrorDetail(event)
+      })
+      if (!transcript) {
+        this.disposeRecognition()
+        this.isBusy = false
+        this.liveTranscript = ''
+        this.finalTranscript = ''
       }
     }
 
     recognition.onend = () => {
-      console.log('[SkyMate] ASR end', asrSource)
-      if (!this.pageActive || recognitionToken !== this.activeAsrSubmitToken) return
-      if (this.activeAsrSubmitted) return
-      if (this.activeAsrHasFinalText) {
-        this.submitAsrWindow('end-final')
-        return
-      }
-      if (isDetail) {
-        this.setData({
-          asrStatus: 'detail-ended',
-          detailQuestion: this.activeAsrInterimText ? '语音提前结束' : '没有听到完整内容',
-          detailAnswer: '请重新开始对话并说完整问题。'
-        })
-      } else {
-        this.setData({
-          asrStatus: 'ended',
-          assistantLine: this.activeAsrInterimText ? '语音提前结束，请重新说完整问题。' : '没有听到完整内容，请重试。'
-        })
-      }
-      this.clearAsrWindow({ stop: false })
-    }
-    try {
-      recognition.start()
-    } catch (error) {
-      console.log('[SkyMate] ASR start failed', asrSource, error || {})
-      this.clearAsrWindow({ stop: true })
-      if (isDetail) {
-        this.setData({
-          asrStatus: 'detail-start-error',
-          detailQuestion: '无法启动语音',
-          detailAnswer: '请检查麦克风权限后重试。'
-        })
-      } else {
-        this.setData({ asrStatus: 'start-error', assistantLine: '无法启动语音识别，请检查权限后重试。' })
-      }
+      if (turnId !== this.currentTurnId) return
+      const transcript = text(this.finalTranscript || this.liveTranscript, '').trim()
+      console.log('[SkyMate] ASR end', source, { transcript, turnId })
+      this.disposeRecognition()
+      this.isBusy = false
+      this.liveTranscript = ''
+      this.finalTranscript = ''
+      this.setData({
+        asrStatus: transcript ? 'success' : 'empty',
+        assistantLine: transcript ? asrTranscriptLine(transcript) : '这次没有听清，请重新说一遍。',
+        diagnosticLine: `asr-end:${source}`
+      })
+      if (transcript) this.handleUserText(transcript)
     }
   },
 
-  startDetailAsr() {
-    this.reportEvent('startDetailAsr')
-    this.startAsr('detail')
+  beginVoiceTurn(source, keyword) {
+    const eventSource = typeof source === 'string' ? source : 'manual-asr'
+    const eventKeyword = typeof keyword === 'string' ? keyword : 'manual-asr'
+    if (this.isBusy || this.currentTurnId > 0 && this.recognition) {
+      this.reportEvent(`voice-busy:${eventSource}`)
+      return
+    }
+    if (!detectRecognitionSupport()) {
+      this.setData({
+        asrStatus: 'unavailable',
+        assistantLine: '当前环境没有 ASR，请检查语音权限。'
+      })
+      return
+    }
+
+    const turnId = this.currentTurnId + 1
+    this.currentTurnId = turnId
+    this.isBusy = true
+    this.liveTranscript = ''
+    this.finalTranscript = ''
+    this.reportEvent(`voiceTurn:${eventSource}`)
+
+    const mode = this.data.mode
+    if (mode !== 'overview' && mode !== 'detail') {
+      this.applyMode('chat')
+    }
+    this.setData({
+      asrStatus: 'starting',
+      assistantLine: mode === 'overview' ? '我在听，可以追问当前星图。' : '我在听，可以说地点或观星问题。',
+      diagnosticLine: `voice:${eventSource}:${eventKeyword || ''}`
+    })
+
+    try {
+      this.bindRecognition(turnId, eventSource)
+      this.recognition.start()
+    } catch (error) {
+      console.log('[SkyMate] ASR start failed', eventSource, error || {})
+      this.cancelRecognition('start-error')
+      this.setData({
+        asrStatus: 'start-error',
+        assistantLine: '无法启动语音识别，请检查权限后重试。'
+      })
+    }
   },
 
   async getDetailAgentSession() {
@@ -2356,7 +2201,60 @@ export default {
 
   async handleUserText(input) {
     this.reportEvent('handleUserText')
-    return this.handleConversationInput(input, 'legacy')
+    const questionText = text(input, '').trim()
+    if (!questionText) return this.promptForCity('empty-voice')
+    if (this.data.mode === 'detail') return this.askDetailAgent(questionText, 'voice-detail')
+    if (this.data.mode === 'overview') return this.handleOverviewQuestion(questionText)
+    return this.handleHomeLocationQuery(questionText)
+  },
+
+  async handleHomeLocationQuery(input) {
+    this.reportEvent('homeLocationQuery')
+    return this.handleConversationInput(input, 'voice-home')
+  },
+
+  async handleOverviewQuestion(input) {
+    this.reportEvent('overviewQuestion')
+    const questionText = text(input, '').trim()
+    if (!questionText) return null
+    if (isBackIntent(questionText)) {
+      this.goBack()
+      return null
+    }
+
+    const context = this.getConversationContext()
+    const intent = this.detectIntent(questionText, context)
+    this.setData({
+      lastIntent: intent.type,
+      assistantLine: `收到追问：${shortText(questionText, 24)}`,
+      diagnosticLine: `overview:${intent.type}`
+    })
+
+    if (intent.type === 'switch_object') {
+      const target = this.switchSelectedObject(intent)
+      if (/(方向|哪里|哪边|怎么找|找法|定位|带我找)/.test(questionText)) {
+        this.openLocate()
+        return target
+      }
+      this.openDetail()
+      return target
+    }
+
+    if (/(方向|哪里|哪边|怎么找|找法|定位|带我找)/.test(questionText)) {
+      this.openLocate()
+      return this.askDetailAgent(questionText, 'voice-overview')
+    }
+
+    if (/(详情|介绍|这个|那个|这颗|那颗|它|当前目标|当前星体)/.test(questionText)) {
+      this.openDetail()
+      return this.askDetailAgent(questionText, 'voice-overview')
+    }
+
+    if (intent.type === 'sky_chart_query') {
+      return this.handleHomeLocationQuery(questionText)
+    }
+
+    return this.askGeneralAgent(questionText)
   },
 
   getConversationContext() {
@@ -2550,6 +2448,7 @@ export default {
     const target = findObjectByHint(intent && intent.targetHint, targets, this.data.selectedKey)
     if (!target) return this.askGeneralAgent(text(intent && intent.targetHint, '换一个'))
     const index = Math.max(0, targets.findIndex(item => item.key === target.key))
+    const rawObjects = resolveSkyObjectSource(null, targets, this.data.rawSkyObjects)
     this.destroyDetailAgentSession()
     const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
       objects: targets,
@@ -2559,10 +2458,8 @@ export default {
       selectedIndex: index,
       selectedKey: target.key,
       selectedObject: target,
-      skyObjects: createSkyChartObjects(
-        this.data.rawSkyObjects && this.data.rawSkyObjects.length ? this.data.rawSkyObjects : targets,
-        target.key
-      ),
+      rawSkyObjects: rawObjects,
+      skyObjects: createSkyChartObjects(rawObjects, target.key),
       skyKnowledgeBase: knowledge,
       detailChatHistory: [],
       assistantLine: `已切换到 ${target.name}，可以继续追问。`
@@ -2816,8 +2713,12 @@ export default {
     const providedTargets = options && options.targets
     const locationName = text(options && options.locationName, '观测位置')
     const targets = providedTargets ? providedTargets.map((item, index) => normalizeTarget(item, index)) : pickTargets(chart)
-    const skyObjects = collectSkyObjects(chart || providedTargets, targets)
-    const first = targets[0] || FALLBACK_TARGETS[0]
+    const collectedSkyObjects = collectSkyObjects(chart || providedTargets, targets)
+    const skyObjects = resolveSkyObjectSource(collectedSkyObjects, targets, this.data.rawSkyObjects, { preferCandidate: !!chart })
+    const visibleObjects = skyObjects.length ? skyObjects : targets
+    const preferredFirst = targets[0] || visibleObjects[0] || FALLBACK_TARGETS[0]
+    const first = visibleObjects.find(item => item.key === preferredFirst.key) || preferredFirst
+    const selectedIndex = Math.max(0, visibleObjects.findIndex(item => item.key === first.key))
     const source = text(options && options.source, 'sky-chart')
     const place = (options && options.place) || this.data.currentPlace || { name: locationName }
     const generatedAt = safeGeneratedAt(readChartTimeValue(chart))
@@ -2831,7 +2732,7 @@ export default {
       observationMetaLine,
       verdict: displayText(verdict, 12),
       condition,
-      visibleObjects: targets,
+      visibleObjects,
       rawSkyObjects: skyObjects,
       selectedObject: first
     })
@@ -2841,7 +2742,7 @@ export default {
       generatedAt,
       location: place,
       query: options && options.query,
-      objects: targets,
+      objects: visibleObjects,
       selectedObject: first
     }, pageData)
 
@@ -2849,10 +2750,10 @@ export default {
 
     this.setData(Object.assign({
       currentPlace: place,
-      visibleObjects: targets,
+      visibleObjects,
       rawSkyObjects: skyObjects,
       selectedKey: first.key,
-      selectedIndex: 0,
+      selectedIndex,
       selectedObject: first,
       locationName,
       skyObjects: createSkyChartObjects(skyObjects, first.key),
@@ -2863,8 +2764,8 @@ export default {
       condition,
       assistantLine: '已筛出最适合普通用户看的目标。',
       requestStatus: displayMeta(`ok ${source}`, 18),
-      diagnosticLine: `targets=${targets.length} sky=${skyObjects.length}`
-    }, createHudSlots(targets, first.key), createSelectedSkyOverlay(first, 0), createDetailState(first, {
+      diagnosticLine: `list=${visibleObjects.length} sky=${skyObjects.length} rec=${targets.length}`
+    }, createHudSlots(visibleObjects, first.key), createSelectedSkyOverlay(first, selectedIndex), createDetailState(first, {
       locationName,
       topMetaLine,
       observationMetaLine,
@@ -2980,7 +2881,7 @@ export default {
       return
     }
     if (mode === 'detail') {
-      this.startDetailAsr()
+      this.beginVoiceTurn('manual-asr', 'manual-asr')
       return
     }
     if (mode === 'locate') {
@@ -2988,7 +2889,7 @@ export default {
       return
     }
     if (mode === 'chat') {
-      this.startAsr()
+      this.beginVoiceTurn('manual-asr', 'manual-asr')
       return
     }
     if (mode === 'error') {
@@ -2996,7 +2897,7 @@ export default {
       return
     }
     if (mode === 'home') {
-      this.startAsr()
+      this.beginVoiceTurn('manual-asr', 'manual-asr')
     }
   },
 
@@ -3032,9 +2933,7 @@ export default {
   },
 
   restoreOverviewState() {
-    const rawObjects = this.data.rawSkyObjects && this.data.rawSkyObjects.length
-      ? this.data.rawSkyObjects
-      : (this.data.visibleObjects && this.data.visibleObjects.length ? this.data.visibleObjects : FALLBACK_TARGETS)
+    const rawObjects = resolveSkyObjectSource(null, this.data.visibleObjects, this.data.rawSkyObjects)
     const visibleObjects = this.data.visibleObjects && this.data.visibleObjects.length
       ? this.data.visibleObjects
       : rawObjects
@@ -3064,6 +2963,7 @@ export default {
     const currentIndex = Math.max(0, targets.findIndex(item => item.key === this.data.selectedKey))
     const nextIndex = (currentIndex + offset + targets.length) % targets.length
     const target = targets[nextIndex] || targets[0] || FALLBACK_TARGETS[0]
+    const rawObjects = resolveSkyObjectSource(null, targets, this.data.rawSkyObjects)
     this.reportEvent(`focus:${target.key}`)
     this.destroyDetailAgentSession()
     const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
@@ -3074,10 +2974,8 @@ export default {
       selectedIndex: nextIndex,
       selectedKey: target.key,
       selectedObject: target,
-      skyObjects: createSkyChartObjects(
-        this.data.rawSkyObjects && this.data.rawSkyObjects.length ? this.data.rawSkyObjects : targets,
-        target.key
-      ),
+      rawSkyObjects: rawObjects,
+      skyObjects: createSkyChartObjects(rawObjects, target.key),
       skyKnowledgeBase: knowledge,
       detailChatHistory: []
     }, createHudSlots(targets, target.key), createSelectedSkyOverlay(target, nextIndex), createDetailState(target, this.data)))
@@ -3092,6 +2990,7 @@ export default {
     const allObjects = (this.data.visibleObjects || []).concat(this.data.rawSkyObjects || [])
     const target = allObjects.find(item => item.key === key) || this.data.visibleObjects[0] || FALLBACK_TARGETS[0]
     const index = Math.max(0, this.data.visibleObjects.findIndex(item => item.key === target.key))
+    const rawObjects = resolveSkyObjectSource(null, this.data.visibleObjects, this.data.rawSkyObjects)
     this.reportEvent(`selectObject:${key}`)
     this.destroyDetailAgentSession()
     const knowledge = updateSkyKnowledgeBase(this.data.skyKnowledgeBase, {
@@ -3102,10 +3001,8 @@ export default {
       selectedIndex: index,
       selectedKey: target.key,
       selectedObject: target,
-      skyObjects: createSkyChartObjects(
-        this.data.rawSkyObjects && this.data.rawSkyObjects.length ? this.data.rawSkyObjects : this.data.visibleObjects,
-        target.key
-      ),
+      rawSkyObjects: rawObjects,
+      skyObjects: createSkyChartObjects(rawObjects, target.key),
       skyKnowledgeBase: knowledge,
       detailChatHistory: []
     }, createHudSlots(this.data.visibleObjects, target.key), createSelectedSkyOverlay(target, index), createDetailState(target, this.data)))
@@ -3157,6 +3054,7 @@ export default {
       <text class="headline">说出城市或观测问题</text>
       <text class="body">例如：杭州 / 今晚苏州能看到什么 / 上海今晚能看金星吗。</text>
       <view class="button-grid home-actions">
+        <button class="btn primary" bindtap="beginVoiceTurn" tabindex="0">语音输入</button>
         <button class="btn primary" bindtap="runSuzhouDemo" tabindex="0">示例城市</button>
       </view>
     </view>
@@ -3226,7 +3124,7 @@ export default {
           <text class="detail-agent-question">{{ detailQuestion }}</text>
           <text class="detail-agent-answer">{{ detailAnswer }}</text>
           <view class="button-grid compact detail-agent-actions">
-            <button class="btn primary detail-talk-btn" bindtap="startDetailAsr" tabindex="0">开始对话</button>
+            <button class="btn primary detail-talk-btn" bindtap="beginVoiceTurn" tabindex="0">开始对话</button>
           </view>
         </view>
       </view>
